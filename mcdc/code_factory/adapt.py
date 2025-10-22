@@ -3,7 +3,7 @@ import numpy as np
 from numba import njit, jit, objmode, literal_unroll, types
 from numba.extending import intrinsic
 import numba
-import mcdc.togo.type_ as type_
+import mcdc.object_.numba_types as type_
 import mcdc.transport.kernel as kernel
 
 
@@ -435,7 +435,7 @@ def gpu_forward_declare(args):
     global step_async, find_cell_async, halt_early
 
     none_type = numba.from_dtype(np.dtype([]))
-    mcdc_global_type = numba.from_dtype(type_.global_)
+    mcdc_global_type = numba.from_dtype(type_.simulation)
     mcdc_data_type = numba.from_dtype(type_.tally)
     state_spec = (
         {
