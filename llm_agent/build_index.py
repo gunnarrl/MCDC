@@ -1,5 +1,6 @@
 import os
 from typing import List, Dict, Any
+from bs4 import BeautifulSoup
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
     Language,
@@ -7,14 +8,16 @@ from langchain_text_splitters import (
 from langchain_community.document_loaders import (
     DirectoryLoader,
     TextLoader,
+    RecursiveUrlLoader,
 )
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
 # Constants
 
 CORPUS_PATH = os.path.join("llm_agent", "corpus")
+WEB_URL = "https://mcdc.readthedocs.io/en/latest/"
 DB_PATH = os.path.join("llm_agent", "db")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -54,6 +57,7 @@ RST_SPLITTER = RecursiveCharacterTextSplitter.from_language(
 SPLITTER_MAP = {
     ".py": PYTHON_SPLITTER,
     ".md": MARKDOWN_SPLITTER,
+    ".html": MARKDOWN_SPLITTER,
     ".sh": DEFAULT_SPLITTER,
     ".rst": RST_SPLITTER,
     ".toml": DEFAULT_SPLITTER,
@@ -77,6 +81,36 @@ def load_documents(corpus_path: str) -> List[Document]:
     print(f"Loaded {len(documents)} documents.")
     return documents
 
+def load_web_documents(url: str) -> List[Document]:
+
+    print(f"Loading web documents from {url}...")
+    
+    def mcdc_extractor(html: str) -> str:
+
+        soup = BeautifulSoup(html, "lxml")
+        # select the main content div, default to body if not found
+        main_content = soup.find("div", {"role": "main"}) or soup.body
+        return main_content.get_text(separator="\n", strip=True)
+
+    loader = RecursiveUrlLoader(
+        url=url,
+        max_depth=10,  # Adjust max_depth as needed
+        extractor=mcdc_extractor,
+        prevent_outside=True,
+        use_async=True,
+        timeout=600,
+        check_response_status=True,
+        exclude_dirs=[
+            f"{url}_static/",
+            f"{url}genindex.html",
+            f"{url}py-modindex.html",
+            f"{url}search.html",
+        ],
+    )
+    
+    web_documents = loader.load()
+    print(f"Loaded {len(web_documents)} web pages.")
+    return web_documents
 
 def split_documents(documents: List[Document]) -> List[Document]:
 
@@ -127,20 +161,24 @@ def main():
         return
 
     # load documents
-    documents = load_documents(CORPUS_PATH)
-
-    # split documents
-    splits = split_documents(documents)
-    if not splits:
-        print("Error: No documents were split. Check corpus directory.")
+    file_docs = load_documents(CORPUS_PATH)
+    web_docs = load_web_documents(WEB_URL)  
+    all_documents = file_docs + web_docs
+    if not all_documents:
+        print("Error: No documents were loaded from file or web.")
         return
 
-    # store in vector database
+    # chunk documents
+    splits = split_documents(all_documents)
+    if not splits:
+        print("Error: No documents were split. Check sources.")
+        return
+
+    # save in vectordb
     create_index(splits, DB_PATH)
     
     print("\n--- Indexing Complete ---")
     print(f"Vector store is saved in: {DB_PATH}")
-
 
 if __name__ == "__main__":
     main()
