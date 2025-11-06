@@ -9,6 +9,7 @@ from langchain_community.document_loaders import (
     DirectoryLoader,
     TextLoader,
     RecursiveUrlLoader,
+    PyMuPDFLoader,
 )
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -70,15 +71,31 @@ def load_documents(corpus_path: str) -> List[Document]:
 
     print(f"Loading documents from {corpus_path}...")
 
-    loader = DirectoryLoader(
+    text_loader = DirectoryLoader(
         corpus_path,
+        glob="**/*[.py, .md, .html, .sh, .rst, .toml, .txt, .gitignore, LICENSE]",
         loader_cls=TextLoader,
         show_progress=True,
         use_multithreading=True,
-        silent_errors=True,  # Skip files it can't read
+        silent_errors=True,  # skip files it can't read
     )
-    documents = loader.load()
-    print(f"Loaded {len(documents)} documents.")
+    text_documents = text_loader.load()
+    print(f"Loaded {len(text_documents)} text documents.")
+
+    pdf_loader = DirectoryLoader(
+        corpus_path,
+        glob="**/*.pdf", 
+        loader_cls=PyMuPDFLoader,
+        show_progress=True,
+        use_multithreading=True,
+        silent_errors=True,
+    )
+    pdf_documents = pdf_loader.load()
+    print(f"Loaded {len(pdf_documents)} PDF documents.")
+
+    documents = text_documents + pdf_documents
+
+    print(f"Loaded {len(documents)} total documents.")
     return documents
 
 def load_web_documents(url: str) -> List[Document]:
