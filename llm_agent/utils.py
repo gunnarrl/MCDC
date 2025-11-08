@@ -11,7 +11,7 @@ DB_PATH = os.path.join("vectorstore")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 def load_llm(temperature=0, model="gemini-2.5-flash"):
-
+    """Load Gemini LLM with API key validation."""
     api_key = os.environ.get("GEMINI_API_KEY")
     
     if not api_key:
@@ -28,14 +28,18 @@ def load_llm(temperature=0, model="gemini-2.5-flash"):
 
 @lru_cache(maxsize=1)
 def get_embeddings():
-
+    """Cached embeddings model to avoid reloading."""
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL, 
         model_kwargs={"device": "cpu"}
     )
 
 def load_retriever(db_path: str = DB_PATH, k: int = 3):
-
+    """
+    Load retriever from ChromaDB.
+    
+    FIX: Returns BaseRetriever that supports .invoke() method (LangChain 1.0+)
+    """
     if not os.path.exists(db_path):
         raise FileNotFoundError(
             f"Vector store not found at {db_path}. "
@@ -49,11 +53,12 @@ def load_retriever(db_path: str = DB_PATH, k: int = 3):
         embedding_function=embeddings
     )
     
-    # retrieve the top k most relevant chunks
+    # FIX: as_retriever() returns a retriever that supports .invoke()
+    # This is the correct API for LangChain 1.0+
     return vectordb.as_retriever(search_kwargs={"k": k})
 
 def format_docs(docs):
-
+    """Format retrieved documents for RAG context."""
     formatted = []
     for i, doc in enumerate(docs, 1):
         source = doc.metadata.get("source", "Unknown")
@@ -63,8 +68,29 @@ def format_docs(docs):
     
     return "\n\n---\n\n".join(formatted)
 
-def create_rag_chain(llm, retriever, prompt_template_str: str):
+def create_rag_chain(retriever):
+    """
+    Chain that always searches docs before answering.
+    Uses newer LangChain LCEL (LangChain Expression Language) syntax.
+    """
+    prompt = PromptTemplate.from_template("""You are MCDC-Tutor. Answer based on docs.
+    
+Question: {question}
 
+Docs: {context}
+
+Answer:""")
+    
+    # LCEL chain: retriever -> format -> prompt -> llm -> parse
+    return (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | load_llm()
+        | StrOutputParser()
+    )
+
+def create_rag_chain_with_prompt(llm, retriever, prompt_template_str: str):
+    """Create a RAG chain with custom prompt template."""
     prompt = PromptTemplate.from_template(prompt_template_str)
     
     rag_chain = (
@@ -77,7 +103,7 @@ def create_rag_chain(llm, retriever, prompt_template_str: str):
     return rag_chain
 
 def create_qa_chain(llm, prompt_template_str: str):
-
+    """Create a simple QA chain without retrieval."""
     prompt = PromptTemplate.from_template(prompt_template_str)
     
     qa_chain = (

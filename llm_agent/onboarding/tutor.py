@@ -1,464 +1,274 @@
-# onboarding/tutor.py
-
-import sys
-import os
-import re
-import subprocess
-import tempfile
-import json
+from onboarding.concepts import CONCEPT_LESSONS
+from utils import load_llm, load_retriever, create_rag_chain
+from onboarding.script_builder import ScriptBuilder
+from onboarding.tools import get_mcdc_tools
+from langchain.agents import create_agent
+from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Optional
 
-# Add project root to path
-project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
-
-# Import your utilities (use these, don't reinvent)
-from llm_agent.utils import load_llm, load_retriever, format_docs
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-
-
-# ─── CONFIGURATION ───
-CHROMA_PATH = os.path.join(project_root, "vectorstore")
-COLLECTION_NAME = "mcdc_docs"
-RTD_DOCS_PATH = os.path.join(project_root, "scraped_docs", "function_docs.json")
-
-
-def load_rtd_signatures() -> Dict[str, Any]:
-    """Load function signatures from RTD docs."""
-    try:
-        with open(RTD_DOCS_PATH, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        print(f"⚠️ RTD docs not found at {RTD_DOCS_PATH}")
-        return {}
-
-
-RTD_SIGNATURES = load_rtd_signatures()
-
-
-def get_vectorstore():
-    """Initialize ChromaDB collection."""
-    try:
-        import chromadb
-        from chromadb.config import Settings
-    except ImportError:
-        raise ImportError("❌ chromadb not found. Install with: pip install chromadb")
+class MCDCTutor:
+    """
+    Interactive tutor for learning MCDC through a 7-step workflow.
     
-    if not os.path.exists(CHROMA_PATH):
-        raise FileNotFoundError(
-            f"❌ Vectorstore not found at {CHROMA_PATH}. Run build_index.py first."
+    Each step:
+    1. Teaches the concept (from hardcoded curriculum)
+    2. Shows a simple example (from RAG)
+    3. Answers questions (using RAG chain)
+    4. Helps user create their own version (using agent + tools)
+    5. Validates and tracks state (using ScriptBuilder)
+    """
+    
+    def __init__(self, llm):
+        # FIX: Create our own builder instance (not a global)
+        self.builder = ScriptBuilder()
+        
+        # Set up retriever and RAG chain for Q&A
+        self.retriever = load_retriever(k=2)
+        self.rag_chain = create_rag_chain(self.retriever)
+        
+        # FIX: Pass builder to tool factory
+        self.tools = get_mcdc_tools(self.builder)
+        
+        self.llm = llm
+        
+        # FIX: Create agent using create_agent (LangChain 1.0+)
+        # create_agent returns a runnable agent that can be invoked directly
+        
+        # Create prompt template for the agent
+        # Must use ChatPromptTemplate for create_agent
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are MCDC-Tutor, helping users build Monte Carlo particle transport simulations.
+
+You have access to tools that let you:
+- Define materials (multi-group or continuous-energy)
+- Create surfaces (planes, spheres, cylinders)
+- Create cells (regions filled with materials)
+- Set up sources (particle emission)
+- Configure tallies (detectors)
+- Set simulation settings
+
+CRITICAL RULES:
+1. ALWAYS call get_current_script FIRST to see what's already defined
+2. Define entities in order: materials → surfaces → cells → source → tally → settings
+3. If a tool returns ERROR, explain why and ask for clarification
+4. When creating materials, ask if they want MG (multi-group) or CE (continuous-energy)
+5. For MG materials, cross-sections are numpy arrays as strings: capture="[0.5]", scatter="[[0.9]]"
+6. Surface names should be descriptive: s1, s2, sphere, cylinder, etc.
+7. Region syntax: +surface means "positive side", -surface means "negative side", & is AND, | is OR
+8. Always provide the exact tool parameters needed
+
+Work step by step:
+- First check what's defined
+- Then create the requested entity
+- Confirm success or explain errors"""),
+            ("placeholder", "{chat_history}"),
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}")
+        ])
+        
+        # FIX: create_agent returns a runnable that can be invoked
+        self.agent = create_agent(
+            model=self.llm,
+            tools=self.tools,
+            system_prompt=prompt
         )
     
-    client = chromadb.PersistentClient(
-        path=CHROMA_PATH,
-        settings=Settings(anonymized_telemetry=False)
-    )
-    
-    try:
-        return client.get_collection(name=COLLECTION_NAME)
-    except Exception as e:
-        raise RuntimeError(f"❌ Collection '{COLLECTION_NAME}' not found: {e}")
-
-
-def format_search_results(results: Dict) -> List[Dict]:
-    """Format ChromaDB results to standard list."""
-    formatted = []
-    if (results and 'documents' in results and results['documents'] and 
-        len(results['documents']) > 0 and results['documents'][0]):
+    def teach_concept(self, step: str) -> bool:
+        """
+        Run the 5-part mini-lesson for a given step.
         
-        for i, doc in enumerate(results['documents'][0]):
-            result = {
-                'content': doc,
-                'metadata': results['metadatas'][0][i] if results['metadatas'] else {},
-                'distance': results['distances'][0][i] if results['distances'] else 0
-            }
-            formatted.append(result)
-    return formatted
-
-
-def search_docs(query: str, filter_metadata: Optional[Dict[str, Any]] = None, n_results: int = 1) -> List[Dict]:
-    """Search vectorstore with fallback to unfiltered search."""
-    collection = get_vectorstore()
-    
-    # Try filtered search first
-    if filter_metadata:
+        Returns:
+            bool: True if user is ready to create, False if they want to skip
+        """
+        lesson = CONCEPT_LESSONS[step]
+        
+        print(f"\n{'='*60}")
+        print(f"📖 STEP: {step.upper()}")
+        print(f"{'='*60}\n")
+        print(f"Concept:\n{lesson['concept']}\n")
+        print(f"Key parts:\n{lesson['parts']}\n")
+        
+        # Show simplest example from RAG
+        # FIX: Use .invoke() only (standardized on LangChain 1.0 API)
         try:
-            results = collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                where=filter_metadata
-            )
-            formatted = format_search_results(results)
-            if formatted:
-                return formatted
-            print(f"⚠️ Filtered search for '{query}' returned no results")
+            examples = self.retriever.invoke(f"beginner {step} example")
+            if examples:
+                print(f"\n📄 Example from regression tests:")
+                print("-" * 60)
+                # Show first 500 chars of first example
+                print(examples[0].page_content[:500])
+                if len(examples[0].page_content) > 500:
+                    print("...")
+                print("-" * 60)
         except Exception as e:
-            print(f"⚠️ Filtered search failed: {e}")
-    
-    # Fallback to unfiltered
-    try:
-        results = collection.query(
-            query_texts=[query],
-            n_results=n_results
-        )
-        return format_search_results(results)
-    except Exception as e:
-        print(f"❌ Search failed: {e}")
-        return []
-
-
-def extract_relevant_snippet(code: str, step_name: str, user_goal: str) -> str:
-    """
-    Extract only the lines relevant to the current step from a full example.
-    Shows ±3 lines around each mcdc.<step_name> call.
-    """
-    lines = code.split('\n')
-    pattern = rf"mcdc\.{step_name}[a-zA-Z_]*\s*\("
-    
-    relevant_blocks = []
-    for i, line in enumerate(lines):
-        if re.search(pattern, line, re.IGNORECASE):
-            start = max(0, i - 3)
-            end = min(len(lines), i + 4)
-            
-            block = f"  # ... lines {start+1}-{end} ...\n"
-            block += '\n'.join(f"  {l}" for l in lines[start:end])
-            block += f"\n  # ... end block ...\n"
-            
-            relevant_blocks.append(block)
-    
-    if relevant_blocks:
-        summary = f"📌 Found {len(relevant_blocks)} relevant block(s):\n\n"
-        return summary + f"\n{'='*50}\n".join(relevant_blocks)
-    
-    return fallback_snippet(code, step_name, user_goal)
-
-
-def fallback_snippet(code: str, step_name: str, user_goal: str) -> str:
-    """Show imports + first 15 code lines when no direct matches."""
-    lines = code.split('\n')
-    imports = [l for l in lines if l.strip().startswith(('import', 'from'))][:5]
-    code_lines = [l for l in lines if l.strip() and not l.startswith('#')][:15]
-    
-    snippet = f"⚠️ No direct matches for '{step_name}'\n"
-    snippet += "Showing file start:\n\n"
-    if imports:
-        snippet += "**Imports:**\n" + '\n'.join(imports) + "\n\n"
-    snippet += "**Code:**\n" + '\n'.join(code_lines)
-    return snippet
-
-def extract_function_calls_summary(code: str, step_name: str) -> str:
-    """
-    Extract ALL function calls for the step and return a summary.
-    """
-    lines = code.split('\n')
-    pattern = rf"mcdc\.{step_name}[a-zA-Z_]*\s*\("
-    
-    function_calls = []
-    for line in lines:
-        if re.search(pattern, line, re.IGNORECASE):
-            # Clean up the line
-            cleaned = line.strip()
-            # Remove inline comments
-            if '#' in cleaned:
-                cleaned = cleaned.split('#')[0].strip()
-            if cleaned:
-                function_calls.append(cleaned)
-    
-    if not function_calls:
-        return f"No {step_name} function calls found in this example."
-    
-    # Build summary
-    unique_calls = len(set(function_calls))
-    total_calls = len(function_calls)
-    
-    if total_calls == 1:
-        return f"Makes 1 call: {function_calls[0]}"
-    
-    if total_calls <= 3:
-        # Show all calls
-        calls_str = "\n  • ".join(function_calls)
-        return f"Makes {total_calls} call(s):\n  • {calls_str}"
-    
-    # For many calls, show count and first few examples
-    preview = "\n  • ".join(function_calls[:3])
-    return f"Makes {total_calls} call(s) ({unique_calls} unique). Examples:\n  • {preview}\n  • ... and {total_calls - 3} more"
-    
-def get_rtd_signature(step_name: str) -> str:
-    """Get official signature from RTD docs."""
-    if step_name in RTD_SIGNATURES:
-        return RTD_SIGNATURES[step_name].get('signature', f'mcdc.{step_name}(...)')
-    return f"mcdc.{step_name}(...)"
-
-
-def create_explanation_chain():
-    """Create RAG chain using YOUR utilities."""
-    try:
-        llm = load_llm(temperature=0.1, model="gemini-2.5-flash")
-        retriever = load_retriever(k=2)
-    except Exception as e:
-        print(f"⚠️  Chain init failed: {e}")
-        return None
-    
-    prompt = PromptTemplate.from_template("""
-You are MCDC-Tutor. Explain this code snippet for a reactor physicist.
-USER GOAL: {query}
-SNIPPET:
-{context}
-Explain in 3-5 sentences what this code does and which parameters matter.
-DO NOT generate new code. Only explain what was retrieved.
-""")
-    
-    return (
-        {"context": retriever | format_docs, "query": RunnablePassthrough()}
-        | prompt | llm | StrOutputParser()
-    )
-
-
-def explain_with_llm(snippet: str, step_name: str, user_goal: str) -> str:
-    """Generate LLM explanation (optional, can be disabled)."""
-    chain = create_explanation_chain()
-    if not chain:
-        return f"Look for mcdc.{step_name}() calls in the example."
-    
-    try:
-        query = f"{step_name} {user_goal}"
-        return chain.invoke(query)
-    except Exception as e:
-        print(f"⚠️ LLM explain failed: {e}")
-        return f"Example shows {step_name} usage. Review lines with mcdc.{step_name}()."
-
-
-def explain_concept(step_name: str, user_goal: str) -> Tuple[str, str]:
-    """
-    Search for examples and return RELEVANT SNIPPETS + explanation.
-    Uses RTD signatures, not regex extraction.
-    """
-    valid_steps = ["material", "surface", "geometry", "source", "tally", "settings", "run"]
-    if step_name not in valid_steps:
-        return (f"# Invalid step: {step_name}", f"Valid: {', '.join(valid_steps)}")
-    
-    query = f"{step_name} {user_goal}".strip()
-    results = search_docs(query, filter_metadata={"step": step_name}, n_results=1)
-    
-    if not results:
-        return (
-            f"# No example for '{user_goal}'",
-            f"Try rephrasing or skip this step."
-        )
-    
-    full_code = results[0]['content']
-    metadata = results[0].get('metadata', {})
-    
-    # Extract snippet (not full file)
-    snippet = extract_relevant_snippet(full_code, step_name, user_goal)
-    
-    # Build explanation using RTD signature
-    signature = get_rtd_signature(step_name)
-    test_name = metadata.get('test_name', metadata.get('function', 'unknown'))
-    relevance = 1 - results[0].get('distance', 0)
-    
-    explanation = f"**Step: {step_name.title()}**\n\n"
-    explanation += f"**Function**: `{signature}`\n\n"
-    explanation += f"**Example**: {test_name}\n"
-    explanation += f"**Relevance**: {relevance:.1%}\n\n"
-    explanation += f"**Summary**: {extract_function_calls_summary(full_code, step_name)}\n\n"
-    explanation += f"**Explanation**: {explain_with_llm(snippet, step_name, user_goal)}"
-    
-    return snippet, explanation
-
-
-class OnboardingSession:
-    """Track onboarding state and script building."""
-    
-    def __init__(self):
-        self.steps = ["material", "surface", "geometry", "source", "tally", "settings", "run"]
-        self.current_step_index = 0
-        self.user_choices: List[Dict] = []
-        self.script_lines: List[str] = []
-    
-    def get_current_step(self) -> str:
-        return self.steps[self.current_step_index]
-    
-    def is_complete(self) -> bool:
-        return self.current_step_index >= len(self.steps)
-    
-    def next_step(self):
-        self.current_step_index += 1
-    
-    def record_choice(self, step: str, choice: str, details: str = ""):
-        self.user_choices.append({"step": step, "choice": choice, "details": details})
-
-
-def interactive_onboarding():
-    """Main tutor loop walking user through 7-step workflow."""
-    session = OnboardingSession()
-    
-    print("\n" + "="*70)
-    print("🎓 MCDC-TUTOR INTERACTIVE ONBOARDING")
-    print("="*70)
-    print("I'll guide you through building a complete MCDC simulation.\n")
-    
-    user_goal = input("What to simulate? (e.g., 'water sphere with 1 MeV source'): ").strip()
-    if not user_goal:
-        user_goal = "basic simulation"
-    
-    print(f"\nBuilding: {user_goal}")
-    print("Steps: materials → surfaces → geometry → sources → tallies → settings → run\n")
-    
-    while not session.is_complete():
-        step = session.get_current_step()
-        step_num = session.current_step_index + 1
+            print(f"\n(Could not load example: {e})")
         
-        print(f"\n{'='*70}")
-        print(f"STEP {step_num}/7: {step.upper()}")
-        print("="*70)
+        # Q&A loop - user can ask questions about the concept
+        print(f"\n💡 Common questions about {step}:")
+        for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
+            print(f"  {i}. {q}")
         
-        what_to_define = input(f"What do you want for '{step}'? (Enter to see examples): ").strip()
-        if not what_to_define:
-            what_to_define = step
-        
-        print(f"\n🔍 Searching examples for '{what_to_define}'...")
-        snippet, explanation = explain_concept(step, what_to_define)
-        
-        print("\n📄 EXAMPLE SNIPPET:")
-        print("-" * 50)
-        print(snippet)
-        print("-" * 50)
-        
-        print(f"\n💬 EXPLANATION:")
-        print(explanation)
-        
-        # Choice loop
         while True:
-            print(f"\n{'='*50}")
-            print("[1] Show another example  [2] Define it yourself")
-            print("[3] Skip this step        [q] Quit")
-            print("="*50)
-            
-            choice = input("Choose: ").strip().lower()
-            
-            if choice == "1":
-                print("⚠️ Phase 4 will add pagination. Showing same example.")
-                continue
-            
-            elif choice == "2":
-                template = f"# Define your {step} here\n# Based on example above:\n"
-                if step in RTD_SIGNATURES:
-                    template += f"# Function: {RTD_SIGNATURES[step]['signature']}\n\n"
-                template += f"# Your code:\n"
-                
-                edited = open_editor(template, f"mcdc_{step}.py")
-                if edited and edited.strip() != template.strip():
-                    session.script_lines.append(f"\n# --- {step.upper()} ---\n")
-                    session.script_lines.append(edited)
-                    session.record_choice(step, "define", "User defined")
-                    print("✅ Saved!")
-                else:
-                    print("⚠️ No changes. Skipping.")
-                    session.record_choice(step, "skip", "No definition")
+            q = input(f"\n❓ Ask a question about {step} (or press Enter to continue): ").strip()
+            if not q:
                 break
             
-            elif choice == "3":
-                print(f"⏭️ Skipping {step}")
-                session.record_choice(step, "skip", "User skipped")
-                break
-            
-            elif choice == "q":
-                print("\n❌ Onboarding cancelled.")
-                return session
-            
-            else:
-                print("❌ Invalid choice. Enter 1, 2, 3, or q.")
-        
-        session.next_step()
-    
-    # Completion
-    print("\n" + "="*70)
-    print("🎉 ONBOARDING COMPLETE!")
-    print("="*70)
-    
-    completed = len([c for c in session.user_choices if c['choice'] == 'define'])
-    print(f"\nSteps completed: {completed}/7")
-    print("\nYour path:")
-    for choice in session.user_choices:
-        print(f"  {choice['step']}: {choice['choice']}")
-    
-    if session.script_lines:
-        save = input("\nSave script? (y/n): ").strip().lower()
-        if save == 'y':
-            filename = input("Filename [mcdc_simulation.py]: ").strip() or "mcdc_simulation.py"
-            
-            script = [
-                "#!/usr/bin/env python3",
-                f'"""MCDC Script - {user_goal}"""\n',
-                "import mcdc",
-                "import numpy as np\n",
-                "# Review before running!",
-            ] + session.script_lines
-            
-            Path(filename).write_text('\n'.join(script))
-            print(f"✅ Saved to {filename}")
-            
-            # Syntax check
             try:
-                subprocess.run(["ruff", "check", "--quiet", filename], check=True)
-                print("✅ No syntax errors")
-            except:
-                print("⚠️ Syntax issues found")
-    
-    return session
-
-
-def open_editor(template: str, filename: str = "temp.py") -> str:
-    """Open temp file in user's editor."""
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(template)
-        temp_path = f.name
-    
-    try:
-        editor = os.environ.get('EDITOR', 'nano')
-        print(f"\n📝 Opening {temp_path} with {editor}...")
-        subprocess.run([editor, temp_path])
+                # Use RAG chain to answer
+                answer = self.rag_chain.invoke(q)
+                print(f"\n🤖 {answer}\n")
+            except Exception as e:
+                print(f"\n❌ Error: {e}\n")
         
-        with open(temp_path, 'r') as f:
-            return f.read()
+        # Check if ready to create
+        ready = input(f"\n✅ Ready to create your {step}? [Y/n]: ").strip().lower()
+        return ready != "n"
     
-    except Exception as e:
-        print(f"⚠️ Editor failed: {e}")
-        return ""
-    
-    finally:
+    def create_step(self, step: str) -> str:
+        """
+        Use agent to help user create their version of this step.
+        
+        Returns:
+            str: The generated code snippet
+        """
+        print(f"\n{'='*60}")
+        print(f"🎯 CREATE YOUR {step.upper()}")
+        print(f"{'='*60}\n")
+        
+        # Get user's goal in natural language
+        goal = input(f"Describe the {step} you want to create: ").strip()
+        
+        if not goal:
+            print("Skipping (no description provided)")
+            return ""
+        
+        print(f"\n🔧 Generating {step}...\n")
+        
+        # FIX: create_agent returns a runnable that expects specific input format
+        # The agent needs: input, chat_history (optional), agent_scratchpad (handled internally)
         try:
-            os.unlink(temp_path)
-        except:
-            pass
-
-
-def test_interactive_onboarding():
-    """Verify session structure without manual input."""
-    session = OnboardingSession()
+            response = self.agent.invoke({
+                "input": f"Create a {step} based on this description: {goal}",
+                "chat_history": [],  # Empty for now, can add conversation history later
+            })
+            
+            # FIX: Response from create_agent is a dict with 'output' key
+            # Format: {"input": "...", "output": "...", "intermediate_steps": [...]}
+            output = response.get("output", "")
+            
+            print(f"\n{'='*60}")
+            print("🤖 AGENT RESPONSE:")
+            print("="*60)
+            print(output)
+            print("="*60 + "\n")
+            
+        except Exception as e:
+            print(f"\n❌ Error during agent execution: {e}")
+            print("You can try again or skip this step.\n")
+            import traceback
+            traceback.print_exc()
+            return ""
+        
+        # Show the current script state
+        print("\n" + "="*60)
+        print("📝 CURRENT SCRIPT:")
+        print("="*60)
+        print(self.builder.get_script())
+        print("="*60 + "\n")
+        
+        return self.builder.get_script()
     
-    assert session.current_step_index == 0
-    assert session.get_current_step() == "material"
-    assert not session.is_complete()
-    assert len(session.steps) == 7
-    
-    for i in range(7):
-        session.next_step()
-    
-    assert session.is_complete()
-    assert session.current_step_index == 7
-    
-    print("✅ Session structure test PASSED")
-    return True
+    def run_onboarding(self):
+        """
+        Full 7-step interactive curriculum.
+        
+        Workflow:
+        1. Materials - Define what things are made of
+        2. Surfaces - Define geometric boundaries
+        3. Cells - Combine surfaces into regions filled with materials
+        4. Source - Define where particles start
+        5. Tally - Define what to measure
+        6. Settings - Configure simulation parameters
+        7. Run - Execute the simulation
+        """
+        print("\n" + "="*60)
+        print("🎓 Welcome to MCDC Onboarding!")
+        print("="*60)
+        print("\nI'll guide you through building a complete MCDC simulation.")
+        print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
+        
+        # Map of step names to user-friendly descriptions
+        steps = [
+            ("material", "Materials (what things are made of)"),
+            ("surface", "Surfaces (geometric boundaries)"),
+            ("cell", "Cells (regions of space)"),
+            ("source", "Source (where particles start)"),
+            ("tally", "Tally (what to measure)"),
+            ("settings", "Settings (simulation parameters)"),
+        ]
+        
+        for step, description in steps:
+            print(f"\n{'#'*60}")
+            print(f"# Step: {description}")
+            print(f"{'#'*60}")
+            
+            # Teach concept and check if user wants to create
+            if self.teach_concept(step):
+                self.create_step(step)
+            else:
+                print(f"⏭️  Skipping {step}.")
+                continue
+        
+        # Final script
+        final_script = self.builder.get_script()
+        
+        print("\n" + "="*60)
+        print("🎉 ONBOARDING COMPLETE!")
+        print("="*60)
+        print("\nYour final MCDC script:\n")
+        print(final_script)
+        print("="*60)
+        
+        # Offer to save
+        save = input("\n💾 Save this script? [Y/n]: ").strip().lower()
+        if save != "n":
+            filename = input("Filename (e.g., my_simulation.py): ").strip()
+            if not filename:
+                filename = "mcdc_simulation.py"
+            if not filename.endswith(".py"):
+                filename += ".py"
+            
+            try:
+                Path(filename).write_text(final_script)
+                print(f"\n✅ Saved to {filename}")
+                print(f"\nTo run: python {filename}")
+            except Exception as e:
+                print(f"\n❌ Error saving file: {e}")
+        
+        print("\n👋 Thanks for using MCDC Tutor!\n")
 
 
 if __name__ == "__main__":
-    if "--test" in sys.argv:
-        test_interactive_onboarding()
-    else:
-        interactive_onboarding()
+    """
+    Run the tutor from command line.
+    
+    Usage:
+        export GEMINI_API_KEY="your-key-here"
+        python onboarding/tutor.py
+    """
+    try:
+        # Load LLM with low temperature for deterministic code generation
+        llm = load_llm(temperature=0.1)
+        
+        # Create tutor instance
+        tutor = MCDCTutor(llm)
+        
+        # Run the interactive onboarding
+        tutor.run_onboarding()
+        
+    except KeyboardInterrupt:
+        print("\n\n👋 Exiting. Your progress was not saved.")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
