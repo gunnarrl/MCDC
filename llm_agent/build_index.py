@@ -110,6 +110,7 @@ def create_vectorstore(docs: List[Document]) -> Chroma:
         documents=docs,
         embedding=embeddings,
         persist_directory=str(INDEX_DIR),
+        collection_name="mcdc_docs",
         collection_metadata={"hnsw:space": "cosine"}
     )
     logging.info("Index created and persisted")
