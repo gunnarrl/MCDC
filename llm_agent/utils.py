@@ -7,7 +7,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-DB_PATH = os.path.join("llm_agent", "db")
+DB_PATH = os.path.join("llm_agent", "vectorstore")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 def load_llm(temperature=0, model="gemini-2.5-flash"):
