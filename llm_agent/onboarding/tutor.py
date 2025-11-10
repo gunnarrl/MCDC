@@ -3,7 +3,7 @@ from utils import load_llm, load_retriever, create_rag_chain
 from onboarding.script_builder import ScriptBuilder
 from onboarding.tools import get_mcdc_tools
 from langchain.agents import create_agent
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pathlib import Path
 
 class MCDCTutor:
@@ -19,58 +19,77 @@ class MCDCTutor:
     """
     
     def __init__(self, llm):
-        # FIX: Create our own builder instance (not a global)
+        # Create our own builder instance (not a global)
         self.builder = ScriptBuilder()
         
         # Set up retriever and RAG chain for Q&A
-        self.retriever = load_retriever(k=2)
-        self.rag_chain = create_rag_chain(self.retriever)
+        self.retriever = load_retriever(k=3)  # Increased from 2 to 3 for better coverage
         
-        # FIX: Pass builder to tool factory
+        # FIX: Improved RAG prompt for educational, beginner-friendly responses
+        rag_prompt = """You are MCDC-Tutor, explaining Monte Carlo particle transport concepts to beginners.
+
+Question: {question}
+
+Documentation: {context}
+
+Provide a helpful answer that includes:
+1. A simple code example (if relevant)
+2. Clear explanation of key concepts (assume NO nuclear physics background)
+3. Brief description of required parameters
+
+Use friendly, educational tone. Keep it concise but informative.
+
+Answer:"""
+        
+        from utils import create_rag_chain_with_prompt
+        self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
+        
+        # Pass builder to tool factory
         self.tools = get_mcdc_tools(self.builder)
         
         self.llm = llm
         
-        # FIX: Create agent using create_agent (LangChain 1.0+)
-        # create_agent returns a runnable agent that can be invoked directly
+        # FIX: create_agent expects a PLAIN STRING prompt (not ChatPromptTemplate)
+        # For create_agent, we only need system_prompt - no placeholders like {input} or {agent_scratchpad}
+        # The agent framework handles message routing internally
+        system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations.
+
+Your job: Help users create MCDC simulation scripts step-by-step using the available tools.
+
+CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE:
+1. NEVER ask the user for more information - make reasonable choices yourself
+2. ALWAYS use tools to create entities - NEVER just describe what you would do
+3. For names, choose sensible defaults like "material_1", "fuel", "absorber", "surface_1", etc.
+4. Call get_current_script() first, then immediately call the creation tool
+
+WORKFLOW FOR EVERY REQUEST:
+Step 1: Call get_current_script() to check what exists
+Step 2: Choose a good name based on the description (e.g., "pure absorber" → name it "absorber")
+Step 3: Call the appropriate tool with ALL required parameters
+Step 4: Explain what you created
+
+TOOL PARAMETER FORMAT:
+- All array parameters MUST be strings: capture="[1.0]" NOT capture=[1.0]
+- 2D arrays: scatter="[[0.9]]" for 1-group, scatter="[[0.8, 0.1], [0.05, 0.85]]" for 2-group
+- Surfaces: params="x=0.0" or params="center=[0.0, 0.0], radius=1.5"
+
+EXAMPLE 1:
+User: "Create a pure absorber material"
+You: [Call get_current_script() → then call set_material_mg(name="absorber", capture="[1.0]", scatter="[[0.0]]")]
+Response: "✅ Created 'absorber' - 100% absorption, no scattering"
+
+EXAMPLE 2:
+User: "Create a fissile material"
+You: [Call get_current_script() → then call set_material_mg(name="fuel", capture="[0.45]", scatter="[[0.0]]", fission="[0.55]", nu_p="[2.5]")]
+Response: "✅ Created 'fuel' - fissile material with 55% fission probability"
+
+DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."""
         
-        # Create prompt template for the agent
-        # Must use ChatPromptTemplate for create_agent
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are MCDC-Tutor, helping users build Monte Carlo particle transport simulations.
-
-You have access to tools that let you:
-- Define materials (multi-group or continuous-energy)
-- Create surfaces (planes, spheres, cylinders)
-- Create cells (regions filled with materials)
-- Set up sources (particle emission)
-- Configure tallies (detectors)
-- Set simulation settings
-
-CRITICAL RULES:
-1. ALWAYS call get_current_script FIRST to see what's already defined
-2. Define entities in order: materials → surfaces → cells → source → tally → settings
-3. If a tool returns ERROR, explain why and ask for clarification
-4. When creating materials, ask if they want MG (multi-group) or CE (continuous-energy)
-5. For MG materials, cross-sections are numpy arrays as strings: capture="[0.5]", scatter="[[0.9]]"
-6. Surface names should be descriptive: s1, s2, sphere, cylinder, etc.
-7. Region syntax: +surface means "positive side", -surface means "negative side", & is AND, | is OR
-8. Always provide the exact tool parameters needed
-
-Work step by step:
-- First check what's defined
-- Then create the requested entity
-- Confirm success or explain errors"""),
-            ("placeholder", "{chat_history}"),
-            ("human", "{input}"),
-            ("placeholder", "{agent_scratchpad}")
-        ])
-        
-        # FIX: create_agent returns a runnable that can be invoked
+        # Create agent using create_agent with string prompt
         self.agent = create_agent(
             model=self.llm,
             tools=self.tools,
-            system_prompt=prompt
+            system_prompt=system_prompt  # Plain string, not ChatPromptTemplate
         )
     
     def teach_concept(self, step: str) -> bool:
@@ -89,9 +108,11 @@ Work step by step:
         print(f"Key parts:\n{lesson['parts']}\n")
         
         # Show simplest example from RAG
-        # FIX: Use .invoke() only (standardized on LangChain 1.0 API)
+        # FIX: Add step-specific query expansion for better retrieval
         try:
-            examples = self.retriever.invoke(f"beginner {step} example")
+            # Query expansion: add step-specific keywords
+            query = f"beginner {step} example simple"
+            examples = self.retriever.invoke(query)
             if examples:
                 print(f"\n📄 Example from regression tests:")
                 print("-" * 60)
@@ -144,17 +165,36 @@ Work step by step:
         
         print(f"\n🔧 Generating {step}...\n")
         
-        # FIX: create_agent returns a runnable that expects specific input format
-        # The agent needs: input, chat_history (optional), agent_scratchpad (handled internally)
+        # FIX: create_agent expects {"messages": [...]} format, not {"input": "..."}
+        # Messages should be in LangChain format with role and content
         try:
             response = self.agent.invoke({
-                "input": f"Create a {step} based on this description: {goal}",
-                "chat_history": [],  # Empty for now, can add conversation history later
+                "messages": [{
+                    "role": "user",
+                    "content": f"Create a {step} based on this description: {goal}"
+                }]
             })
             
-            # FIX: Response from create_agent is a dict with 'output' key
-            # Format: {"input": "...", "output": "...", "intermediate_steps": [...]}
-            output = response.get("output", "")
+            # FIX: Response from create_agent contains a "messages" list
+            # The last message is the agent's final response
+            messages = response.get("messages", [])
+            if messages:
+                last_message = messages[-1]
+                # Handle different message formats
+                if hasattr(last_message, 'content'):
+                    # AIMessage object
+                    output = last_message.content
+                elif isinstance(last_message, dict):
+                    # Dict format
+                    output = last_message.get('content', str(last_message))
+                elif isinstance(last_message, list):
+                    # List of content blocks (Gemini format)
+                    text_parts = [block.get('text', '') for block in last_message if isinstance(block, dict) and block.get('type') == 'text']
+                    output = '\n'.join(text_parts) if text_parts else str(last_message)
+                else:
+                    output = str(last_message)
+            else:
+                output = "No response from agent"
             
             print(f"\n{'='*60}")
             print("🤖 AGENT RESPONSE:")
