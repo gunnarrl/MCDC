@@ -1,21 +1,264 @@
 import json
 import numpy as np
+import pandas as pd
+import re
 from langchain.tools import tool
 from onboarding.script_builder import ScriptBuilder
+from typing import Dict, List, Set
 
-# FIX: Import json for get_current_script
+class MaterialCalculator:
+    """
+    Public-domain nuclear data. Calculates atomic compositions only.
+    Loads data from nuclear_data.csv
+    """
+    
+    try:
+        # Load data from the CSV file
+        _data_df = pd.read_csv("onboarding/nuclear_data.csv")
+        _data_df.set_index('Isotope', inplace=True)
+        
+        # Recreate the old dictionary structure for compatibility
+        NUCLEAR_DATA = {}
+        for elem in _data_df['Element'].unique():
+            elem_df = _data_df[_data_df['Element'] == elem]
+            NUCLEAR_DATA[elem] = {
+                iso: (row['Mass_u'], row['Abundance'])
+                for iso, row in elem_df.iterrows()
+            }
+            
+        # Create a set of dominant isotopes for filtering
+        DOMINANT_ISOTOPES = set(_data_df[_data_df['Dominant'] == 1].index)
 
+    except FileNotFoundError:
+        print("FATAL ERROR: nuclear_data.csv not found.")
+    
+    COMMON_MATERIALS = {
+        'water': {'formula': 'H2O', 'density': 1.0, 'aliases': ['h2o', 'light water', 'lw']},
+        'heavy_water': {'formula': 'D2O', 'density': 1.1, 'aliases': ['d2o', 'heavy water', 'hw']},
+        'uranium_dioxide': {'formula': 'UO2', 'density': 10.5, 'aliases': ['uo2', 'uranium oxide', 'fuel']},
+        'zirconium': {'formula': 'Zr', 'density': 6.52, 'aliases': ['zr', 'zirc', 'zircaloy']},
+        'boron_carbide': {'formula': 'B4C', 'density': 2.52, 'aliases': ['b4c', 'boron carbide', 'control rod']},
+        'graphite': {'formula': 'C', 'density': 1.7, 'aliases': ['c', 'graphite', 'moderator']},
+        'sodium': {'formula': 'Na', 'density': 0.97, 'aliases': ['na', 'sodium', 'coolant']},
+        'lead': {'formula': 'Pb', 'density': 11.34, 'aliases': ['pb', 'lead', 'shielding']},
+        'iron': {'formula': 'Fe', 'density': 7.87, 'aliases': ['fe', 'iron', 'steel']},
+        'stainless_steel': {'formula': 'Fe0.7Cr0.2Ni0.1', 'density': 8.0, 'aliases': ['ss', 'stainless steel', 'steel']},
+    }
+    
+    AVOGADRO = 6.02214076e23
+    
+    @staticmethod
+    def parse_formula(formula: str) -> Dict[str, float]:
+        """Parse chemical formulas with element counts: H2O, UO2, B4C, Fe0.7Cr0.2Ni0.1"""
+        parsed = {}
+        # Pattern: Element symbol (1-2 letters) followed by optional number
+        pattern = r'([A-Z][a-z]?)(\d*\.?\d*)'
+        matches = re.findall(pattern, formula)
+        
+        for element, count_str in matches:
+            count = float(count_str) if count_str else 1.0
+            parsed[element] = parsed.get(element, 0) + count
+        
+        return parsed
+    
+    @staticmethod
+    def calculate_composition(formula: str, density: float, enrichment: float = None) -> Dict[str, float]:
+        """
+        Calculate atoms/barn-cm for each isotope from chemical formula.
+        
+        Process:
+        1. Parse formula -> element counts
+        2. Calculate molecular weight using NIST isotopic masses
+        3. molecules/cm³ = (density / mol_weight) × Avogadro
+        4. For each element, split into isotopes using natural abundances
+        5. For uranium: apply enrichment weight fraction -> atom fraction conversion
+        6. Convert atoms/cm³ -> atoms/barn-cm (×1e-24)
+        """
+        element_counts = MaterialCalculator.parse_formula(formula)
+        
+        # Calculate molecular weight accounting for isotopic abundances
+        molecular_weight = 0.0
+        for element, count in element_counts.items():
+            if element not in MaterialCalculator.NUCLEAR_DATA:
+                raise ValueError(f"Unknown element: {element}")
+            
+            element_weight = 0.0
+            for isotope, (mass, abundance) in MaterialCalculator.NUCLEAR_DATA[element].items():
+                element_weight += mass * abundance
+            
+            molecular_weight += element_weight * count
+        
+        if molecular_weight == 0:
+            raise ValueError("Could not calculate molecular weight")
+        
+        # Convert density to molecules/cm³
+        molecules_per_cm3 = (density / molecular_weight) * MaterialCalculator.AVOGADRO
+        
+        # Calculate isotopic composition
+        composition = {}
+        for element, count in element_counts.items():
+            if element == 'U' and enrichment is not None:
+                # Special uranium enrichment handling
+                u235_mass = MaterialCalculator.NUCLEAR_DATA['U']['U235'][0]
+                u238_mass = MaterialCalculator.NUCLEAR_DATA['U']['U238'][0]
+                
+                # Atom fraction of U235 = (W235/M235) / (W235/M235 + W238/M238)
+                # where W235 = enrichment, W238 = 1 - enrichment
+                atom_frac_u235 = (enrichment/u235_mass) / (enrichment/u235_mass + (1-enrichment)/u238_mass)
+                
+                # Apply to all uranium isotopes, scaling natural abundances
+                for isotope, (mass, abundance) in MaterialCalculator.NUCLEAR_DATA['U'].items():
+                    if isotope == 'U235':
+                        isotope_abundance = atom_frac_u235
+                    elif isotope == 'U238':
+                        isotope_abundance = 1.0 - atom_frac_u235
+                    else:
+                        # U234 and others scaled proportionally
+                        isotope_abundance = abundance * (1e-6)  # Very small for simplicity
+                    
+                    atoms_per_barn_cm = molecules_per_cm3 * count * isotope_abundance * 1e-24
+                    composition[isotope] = atoms_per_barn_cm
+            else:
+                # Normal isotopic splitting by natural abundance
+                for isotope, (mass, abundance) in MaterialCalculator.NUCLEAR_DATA[element].items():
+                    atoms_per_barn_cm = molecules_per_cm3 * count * abundance * 1e-24
+                    if atoms_per_barn_cm > 1e-30:  # Filter out negligible isotopes
+                        composition[isotope] = atoms_per_barn_cm
+        
+        return composition
+
+# ---------------------------------------------------------------------------
+# MODIFIED TOOL FUNCTION
+# ---------------------------------------------------------------------------
 
 def get_mcdc_tools(builder: ScriptBuilder):
     """
     Factory function that creates tools bound to a specific ScriptBuilder instance.
-    
-    This uses closures to "bake in" the builder instance that the tools will operate on.
-    Each MCDCTutor instance creates its own set of tools with its own builder.
-    
-    FIX: Now accepts builder parameter instead of using global instance.
     """
     
+    @tool
+    def create_material_from_formula(
+        name: str,
+        formula: str = None,
+        density: float = None,
+        mode: str = "CE",
+        capture: str = None,
+        scatter: str = None,
+        fission: str = None,
+        nu_p: str = None,
+        enrichment: float = None
+    ) -> str:
+        """
+        Create material from chemical formula (MG or CE mode).
+        
+        MG Mode: Self-contained, uses macroscopic cross-sections
+        CE Mode (default): Requires MCDC_XSLIB environment variable. Calculates a simplified
+                 nuclide composition using only dominant isotopes.
+        
+        Examples:
+        - MG water: create_material_from_formula("water", "H2O", 1.0, mode="MG", 
+                                                capture="[0.02]", scatter="[[0.08]]")
+        - CE water: create_material_from_formula("water", "H2O", 1.0, mode="CE")
+        - CE 3% fuel: create_material_from_formula("fuel", "UO2", 10.5, mode="CE", enrichment=0.03)
+        """
+        if builder.has_entity("material", name):
+            return f"ERROR: Material '{name}' already defined."
+        
+        formula_clean = formula.strip() if formula else ""
+        
+        # Auto-detect common materials
+        detected_formula = None
+        if not formula_clean:
+            for mat_key, info in MaterialCalculator.COMMON_MATERIALS.items():
+                if name.lower() in info['aliases'] or info['formula'].lower() == name.lower():
+                    formula_clean = info['formula']
+                    if density is None:
+                        density = info['density']
+                    detected_formula = info['formula']
+                    break
+        
+        # If still no formula, try to use the name as the formula
+        if not formula_clean:
+            formula_clean = name
+            
+        # If density is still unknown, error out (it's required for CE)
+        if mode.upper() == "CE" and density is None:
+             # Try one last time to get density from common materials
+            if formula_clean.upper() in [v['formula'] for v in MaterialCalculator.COMMON_MATERIALS.values()]:
+                 for k, v in MaterialCalculator.COMMON_MATERIALS.items():
+                     if v['formula'] == formula_clean.upper():
+                         density = v['density']
+                         break
+            else:
+                return f"ERROR: Density is required for CE material '{name}' and was not provided or found."
+
+        try:
+            if mode.upper() == "CE":
+                # === THIS IS THE NEW LOGIC ===
+                
+                # 1. Calculate the full, precise composition
+                full_composition = MaterialCalculator.calculate_composition(
+                    formula_clean, density, enrichment
+                )
+                
+                # 2. Filter for dominant isotopes
+                filtered_composition = {}
+                for isotope, value in full_composition.items():
+                    # Uranium is a special case: always keep U235 and U238
+                    if isotope.startswith("U"):
+                        if enrichment is not None and isotope in ["U235", "U238"]:
+                             filtered_composition[isotope] = value
+                        elif enrichment is None and isotope in MaterialCalculator.DOMINANT_ISOTOPES:
+                             filtered_composition[isotope] = value # Keep natural U
+                    # For all other elements, check the dominant list
+                    elif isotope in MaterialCalculator.DOMINANT_ISOTOPES:
+                        filtered_composition[isotope] = value
+
+                # 3. Build the code string
+                comp_lines = [
+                    f"        '{iso}': {val:.16e}," 
+                    for iso, val in filtered_composition.items()
+                ]
+                comp_str = "\n".join(comp_lines)
+                
+                code = f"""{name} = mcdc.Material(
+                    nuclide_composition={{
+                {comp_str}
+                    }}
+                )
+                # NOTE: CE mode requires MCDC_XSLIB environment variable
+                # export MCDC_XSLIB="/path/to/your/nuclear/data"
+                """
+                
+                builder.add_line(code, "material", name)
+                enrichment_str = f" (enriched to {enrichment*100:.1f}% U-235)" if enrichment else ""
+                return f"✓ Created CE material '{name}': {formula_clean} at {density} g/cm³{enrichment_str}"
+            
+            else:
+                # Multi-Group mode (default) - use provided cross-sections
+                code_parts = [f"{name} = mcdc.MaterialMG("]
+                
+                # Use defaults or provided values
+                cap = capture if capture else "[0.1]"  # Default to some absorption
+                code_parts.append(f"    capture=np.array({cap})")
+                
+                if scatter:
+                    code_parts.append(f",\n    scatter=np.array({scatter})")
+                if fission:
+                    code_parts.append(f",\n    fission=np.array({fission})")
+                    if nu_p:
+                        code_parts.append(f",\n    nu_p=np.array({nu_p})")
+                
+                code_parts.append("\n)")
+                code = "".join(code_parts)
+                
+                builder.add_line(code, "material", name)
+                formula_str = f"{formula_clean} at {density} g/cm³" if formula_clean else ""
+                return f"✓ Created MG material '{name}': {formula_str} (no external data needed)"
+                
+        except Exception as e:
+            return f"ERROR: {str(e)}"
+        
     @tool
     def set_material_mg(
         name: str, 
@@ -331,6 +574,7 @@ DEFINED ENTITIES:
     
     # Return all tools as a list
     return [
+        create_material_from_formula,
         set_material_mg,
         set_material_ce,
         create_surface,

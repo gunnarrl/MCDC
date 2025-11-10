@@ -1,5 +1,5 @@
 from onboarding.concepts import CONCEPT_LESSONS
-from utils import load_llm, load_retriever, create_rag_chain
+from utils import load_llm, load_retriever, create_rag_chain_with_prompt
 from onboarding.script_builder import ScriptBuilder
 from onboarding.tools import get_mcdc_tools
 from langchain.agents import create_agent
@@ -12,11 +12,25 @@ class MCDCTutor:
     
     Each step:
     1. Teaches the concept (from hardcoded curriculum)
-    2. Shows a simple example (from RAG)
-    3. Answers questions (using RAG chain)
-    4. Helps user create their own version (using agent + tools)
+    2. Shows relevant examples (from RAG with step filtering)
+    3. Answers questions (using step-specific RAG chain)
+    4. Helps user create their version (using agent + tools)
     5. Validates and tracks state (using ScriptBuilder)
     """
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PHASE 3: Step-specific keywords for query expansion
+    # Maps each workflow step to relevant technical terms that improve retrieval
+    # ─────────────────────────────────────────────────────────────────────────────
+    STEP_KEYWORDS = {
+        "material": "MaterialMG Material capture scatter fission nuclide_composition density multi-group continuous-energy cross-section macroscopic",
+        "surface": "Surface PlaneX PlaneY PlaneZ CylinderX CylinderY CylinderZ Sphere boundary_condition vacuum reflective interface geometry normal",
+        "cell": "Cell region fill boolean operators intersection union & | translation rotation universe lattice root_universe",
+        "source": "Source position energy direction isotropic white_direction time energy_group spectrum point_source volume_source uniform",
+        "tally": "TallyMesh TallyCell TallySurface scores flux collision fission net-current mesh energy_bins detector mu_bins",
+        "settings": "settings N_particle N_batch eigenmode census output population_control variance_reduction convergence active inactive",
+        "run": "run execute simulate output h5 tally results k-effective convergence statistics batch cycle"
+    }
     
     def __init__(self, llm):
         # Create our own builder instance (not a global)
@@ -40,6 +54,7 @@ Provide a helpful answer that includes:
 Use friendly, educational tone. Keep it concise but informative.
 
 Answer:"""
+        self.rag_prompt = rag_prompt  # Store for reuse in step-specific chains
         
         from utils import create_rag_chain_with_prompt
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
@@ -52,38 +67,53 @@ Answer:"""
         # FIX: create_agent expects a PLAIN STRING prompt (not ChatPromptTemplate)
         # For create_agent, we only need system_prompt - no placeholders like {input} or {agent_scratchpad}
         # The agent framework handles message routing internally
-        system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations.
+        system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
 
-Your job: Help users create MCDC simulation scripts step-by-step using the available tools.
+---
+## 💡 CRITICAL MATERIAL MODE INSTRUCTIONS (CE is now the default)
 
-CRITICAL INSTRUCTIONS - YOU MUST FOLLOW THESE:
-1. NEVER ask the user for more information - make reasonable choices yourself
-2. ALWAYS use tools to create entities - NEVER just describe what you would do
-3. For names, choose sensible defaults like "material_1", "fuel", "absorber", "surface_1", etc.
-4. Call get_current_script() first, then immediately call the creation tool
+- **Continuous-Energy (CE)**: **Default mode.** Use this most of the time. It requires calculating the atomic composition and automatically adds a note about the required `MCDC_XSLIB` environment variable.
+- **Multi-Group (MG)**: Use this mode **only for teaching basic concepts** or when the user explicitly provides cross-section data (e.g., capture="[1.0]").
 
-WORKFLOW FOR EVERY REQUEST:
-Step 1: Call get_current_script() to check what exists
-Step 2: Choose a good name based on the description (e.g., "pure absorber" → name it "absorber")
-Step 3: Call the appropriate tool with ALL required parameters
-Step 4: Explain what you created
+---
+## ❓ WHEN TO ASK CLARIFYING QUESTIONS
 
-TOOL PARAMETER FORMAT:
-- All array parameters MUST be strings: capture="[1.0]" NOT capture=[1.0]
-- 2D arrays: scatter="[[0.9]]" for 1-group, scatter="[[0.8, 0.1], [0.05, 0.85]]" for 2-group
-- Surfaces: params="x=0.0" or params="center=[0.0, 0.0], radius=1.5"
+Ask **ONE** clarifying question when a parameter is critical and unknown:
+✅ DO ASK: "Should that be light water (H₂O) or heavy water (D₂O)?" (affects neutron physics significantly)
+✅ DO ASK: "What enrichment for uranium fuel? PWR uses 3-5%, research reactors up to 20%." (critical safety parameter)
+✅ DO ASK: "Natural uranium (0.72% U-235) or enriched?" (determines if material is fissile)
+❌ DON'T ASK: "What density should I use?" (use standard values from MaterialCalculator)
+❌ DON'T ASK: "What cross-section values?" (CE mode handles this; MG uses sensible defaults if needed)
 
-EXAMPLE 1:
-User: "Create a pure absorber material"
-You: [Call get_current_script() → then call set_material_mg(name="absorber", capture="[1.0]", scatter="[[0.0]]")]
-Response: "✅ Created 'absorber' - 100% absorption, no scattering"
+---
+## ⚙️ WORKFLOW FOR EVERY REQUEST
 
-EXAMPLE 2:
-User: "Create a fissile material"
-You: [Call get_current_script() → then call set_material_mg(name="fuel", capture="[0.45]", scatter="[[0.0]]", fission="[0.55]", nu_p="[2.5]")]
-Response: "✅ Created 'fuel' - fissile material with 55% fission probability"
+1.  **Check Status:** Call `get_current_script()` to check what entities already exist.
+2.  **Clarify:** If the request is ambiguous (e.g., "uranium fuel"), ask **ONE** clarifying question, if needed.
+3.  **Convert & Set Defaults:**
+    * If the user names a **common material** (e.g., "water", "stainless steel"), **convert the name to its formula** (e.g., "H2O", "Fe0.7Cr0.2Ni0.1").
+    * Look up and use the **default density** from `MaterialCalculator.COMMON_MATERIALS` for the formula.
+4.  **Tool Call:** Call the appropriate tool with **ALL** required parameters, defaulting to `mode="CE"` unless MG is explicitly requested or required for teaching.
+5.  **Explain:** Explain what you created and why.
 
-DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."""
+---
+## 📝 TOOL PARAMETER FORMAT
+
+-   All array parameters **MUST be strings**: e.g., `capture="[1.0]"` NOT `capture=[1.0]`.
+-   2D arrays: e.g., `scatter="[[0.8, 0.1], [0.05, 0.85]]"`.
+-   Surfaces params: e.g., `params="x=0.0"` or `params="center=[0.0, 0.0], radius=1.5"`.
+
+---
+## EXAMPLE FLOW (CE Default)
+
+**Scenario:** User wants 3% enriched fuel.
+
+1.  User: "create uranium fuel"
+2.  You: "Should that be natural uranium or enriched? PWR fuel is typically **3-5% U-235**." (Step 2)
+3.  User: "3% enriched"
+4.  You: [**Internal Conversion:** Name="fuel" → Formula="UO2", Density=10.5] (Step 3)
+5.  You: [Call `create_material_from_formula`(**`"fuel"`**, **`"UO2"`**, **`10.5`**, **`mode="CE"`**, **`enrichment=0.03`**)] (Step 4)
+6.  Response: "✓ Created **CE material** 'fuel': UO2 at 10.5 g/cm³ (enriched to 3.0% U-235). **NOTE:** CE mode requires MCDC\_XSLIB environment variable."""
         
         # Create agent using create_agent with string prompt
         self.agent = create_agent(
@@ -91,6 +121,49 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
             tools=self.tools,
             system_prompt=system_prompt  # Plain string, not ChatPromptTemplate
         )
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PHASE 3: Query expansion for better retrieval
+    # Combines user query with relevant technical terms to improve document recall
+    # ─────────────────────────────────────────────────────────────────────────────
+    def expand_query(self, query: str, step: str) -> str:
+        """
+        Expand query with step-specific keywords for better retrieval.
+        This helps find relevant documents even when user uses non-technical language.
+        """
+        # Start with step-specific context
+        base_query = f"{step} {query}"
+        
+        # Append relevant keywords from our keyword mapping
+        keywords = self.STEP_KEYWORDS.get(step, "")
+        
+        return f"{base_query} {keywords}"
+    
+    # ─────────────────────────────────────────────────────────────────────────────
+    # PHASE 3: Create step-filtered retriever
+    # Ensures we only retrieve examples/documentation relevant to current workflow step
+    # ─────────────────────────────────────────────────────────────────────────────
+    def get_step_retriever(self, step: str):
+        """
+        Create a retriever that filters by workflow step.
+        This is crucial for showing users only relevant examples during each step.
+        """
+        try:
+            # Access the underlying vectorstore from our existing retriever
+            # This avoids reloading the vectorstore while allowing dynamic filtering
+            vectorstore = self.retriever.vectorstore
+            
+            # Create a new retriever with step-specific metadata filter
+            return vectorstore.as_retriever(
+                search_kwargs={
+                    "k": 3,  # Retrieve top 3 documents
+                    "filter": {"section": step}  # ← KEY: Filter by workflow step
+                }
+            )
+        except AttributeError:
+            # Fallback: if vectorstore attribute isn't accessible, return unfiltered retriever
+            print(f"Debug: Could not access vectorstore for step filtering, using general retriever")
+            return self.retriever
     
     def teach_concept(self, step: str) -> bool:
         """
@@ -107,12 +180,20 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
         print(f"Concept:\n{lesson['concept']}\n")
         print(f"Key parts:\n{lesson['parts']}\n")
         
-        # Show simplest example from RAG
-        # FIX: Add step-specific query expansion for better retrieval
+        # ─────────────────────────────────────────────────────────────────────────
+        # PHASE 3: Show step-specific examples from RAG
+        # Uses query expansion + metadata filtering for maximum relevance
+        # ─────────────────────────────────────────────────────────────────────────
         try:
-            # Query expansion: add step-specific keywords
-            query = f"beginner {step} example simple"
-            examples = self.retriever.invoke(query)
+            # Create retriever filtered for this specific step
+            step_retriever = self.get_step_retriever(step)
+            
+            # Expand query with step-relevant keywords
+            expanded_query = self.expand_query("beginner simple example", step)
+            
+            # Retrieve relevant examples (already filtered by step)
+            examples = step_retriever.invoke(expanded_query)
+            
             if examples:
                 print(f"\n📄 Example from regression tests:")
                 print("-" * 60)
@@ -129,14 +210,27 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
         for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
             print(f"  {i}. {q}")
         
+        # ─────────────────────────────────────────────────────────────────────────
+        # PHASE 3: Create step-specific RAG chain for Q&A
+        # This ensures answers are tailored to the current workflow step
+        # ─────────────────────────────────────────────────────────────────────────
+        step_rag_chain = create_rag_chain_with_prompt(
+            self.llm,
+            self.get_step_retriever(step),
+            self.rag_prompt
+        )
+        
         while True:
             q = input(f"\n❓ Ask a question about {step} (or press Enter to continue): ").strip()
             if not q:
                 break
             
             try:
-                # Use RAG chain to answer
-                answer = self.rag_chain.invoke(q)
+                # Expand user query to improve retrieval
+                expanded_q = self.expand_query(q, step)
+                
+                # Use step-specific RAG chain for more relevant answers
+                answer = step_rag_chain.invoke(expanded_q)
                 print(f"\n🤖 {answer}\n")
             except Exception as e:
                 print(f"\n❌ Error: {e}\n")
@@ -145,12 +239,35 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
         ready = input(f"\n✅ Ready to create your {step}? [Y/n]: ").strip().lower()
         return ready != "n"
     
+    def _parse_agent_response(self, response) -> str:
+        """Handle all response formats: strings, dicts, AIMessage, content blocks."""
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict):
+            if 'content' in response:
+                return response['content']
+            if 'messages' in response and response['messages']:
+                return self._extract_message_content(response['messages'][-1])
+        if hasattr(response, 'content'):
+            return response.content
+        # Handle list of content blocks (Gemini format)
+        if isinstance(response, list):
+            text_parts = [block.get('text', '') for block in response if isinstance(block, dict) and block.get('type') == 'text']
+            return '\n'.join(text_parts) if text_parts else str(response)
+        return str(response)
+
+    def _extract_message_content(self, message):
+        """Extract content from LangChain message objects or dicts."""
+        if isinstance(message, dict):
+            return message.get('content', str(message))
+        if hasattr(message, 'content'):
+            return message.content
+        return str(message)
+
     def create_step(self, step: str) -> str:
         """
         Use agent to help user create their version of this step.
-        
-        Returns:
-            str: The generated code snippet
+        Supports clarification loops for ambiguous requests.
         """
         print(f"\n{'='*60}")
         print(f"🎯 CREATE YOUR {step.upper()}")
@@ -158,55 +275,68 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
         
         # Get user's goal in natural language
         goal = input(f"Describe the {step} you want to create: ").strip()
-        
         if not goal:
             print("Skipping (no description provided)")
             return ""
         
         print(f"\n🔧 Generating {step}...\n")
         
-        # FIX: create_agent expects {"messages": [...]} format, not {"input": "..."}
-        # Messages should be in LangChain format with role and content
-        try:
-            response = self.agent.invoke({
-                "messages": [{
-                    "role": "user",
-                    "content": f"Create a {step} based on this description: {goal}"
-                }]
-            })
-            
-            # FIX: Response from create_agent contains a "messages" list
-            # The last message is the agent's final response
-            messages = response.get("messages", [])
-            if messages:
-                last_message = messages[-1]
-                # Handle different message formats
-                if hasattr(last_message, 'content'):
-                    # AIMessage object
-                    output = last_message.content
-                elif isinstance(last_message, dict):
-                    # Dict format
-                    output = last_message.get('content', str(last_message))
-                elif isinstance(last_message, list):
-                    # List of content blocks (Gemini format)
-                    text_parts = [block.get('text', '') for block in last_message if isinstance(block, dict) and block.get('type') == 'text']
-                    output = '\n'.join(text_parts) if text_parts else str(last_message)
-                else:
-                    output = str(last_message)
-            else:
-                output = "No response from agent"
-            
-            print(f"\n{'='*60}")
-            print("🤖 AGENT RESPONSE:")
-            print("="*60)
-            print(output)
-            print("="*60 + "\n")
-            
-        except Exception as e:
-            print(f"\n❌ Error during agent execution: {e}")
-            print("You can try again or skip this step.\n")
-            import traceback
-            traceback.print_exc()
+        # Allow for clarification loop (max 3 attempts to prevent infinite loops)
+        context = f"Create a {step} based on this description: {goal}"
+        max_attempts = 3
+        
+        for attempt in range(max_attempts):
+            try:
+                # FIX: create_agent expects {"messages": [...]} format
+                response = self.agent.invoke({
+                    "messages": [{
+                        "role": "user",
+                        "content": context
+                    }]
+                })
+                
+                # Parse response using new handler
+                output = self._parse_agent_response(response)
+                
+                # Check if agent is asking a clarifying question
+                clarification_phrases = [
+                    "should that be", "what", "which", "natural or enriched",
+                    "light water or heavy water", "h2o or d2o", "enrichment"
+                ]
+                
+                if any(phrase in output.lower() for phrase in clarification_phrases):
+                    print(f"\n🤖 AGENT QUESTION:")
+                    print("="*60)
+                    print(output)
+                    print("="*60 + "\n")
+                    
+                    # Get user clarification
+                    clarification = input("Your answer: ").strip()
+                    if not clarification:
+                        print("No clarification provided. Skipping...")
+                        return ""
+                    
+                    # Update context with clarification
+                    context = f"Based on user's clarification '{clarification}', create the {step}: {goal}"
+                    continue  # Loop back to agent with clarification
+                
+                # Success - show final response
+                print(f"\n" + "="*60)
+                print("🤖 AGENT RESPONSE:")
+                print("="*60)
+                print(output)
+                print("="*60 + "\n")
+                break
+                
+            except Exception as e:
+                print(f"\n❌ Error during agent execution: {e}")
+                print("You can try again or skip this step.\n")
+                import traceback
+                traceback.print_exc()
+                return ""
+        
+        else:
+            print("\n⚠️  Too many clarification attempts. Skipping this step.")
             return ""
         
         # Show the current script state
@@ -221,15 +351,6 @@ DO NOT ask follow-up questions. DO NOT say "I can help with that" - just DO IT."
     def run_onboarding(self):
         """
         Full 7-step interactive curriculum.
-        
-        Workflow:
-        1. Materials - Define what things are made of
-        2. Surfaces - Define geometric boundaries
-        3. Cells - Combine surfaces into regions filled with materials
-        4. Source - Define where particles start
-        5. Tally - Define what to measure
-        6. Settings - Configure simulation parameters
-        7. Run - Execute the simulation
         """
         print("\n" + "="*60)
         print("🎓 Welcome to MCDC Onboarding!")
