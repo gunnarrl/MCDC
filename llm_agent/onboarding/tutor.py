@@ -243,105 +243,154 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         """Handle all response formats: strings, dicts, AIMessage, content blocks."""
         if isinstance(response, str):
             return response
+            
+        # Handle standard LangChain AgentExecutor output (dict with 'output' key)
         if isinstance(response, dict):
+            if 'output' in response:
+                return response['output']
             if 'content' in response:
                 return response['content']
             if 'messages' in response and response['messages']:
                 return self._extract_message_content(response['messages'][-1])
+                
+        # Handle object with .content attribute (AIMessage)
         if hasattr(response, 'content'):
             return response.content
-        # Handle list of content blocks (Gemini format)
+            
+        # Handle list (e.g., list of messages or content blocks)
         if isinstance(response, list):
-            text_parts = [block.get('text', '') for block in response if isinstance(block, dict) and block.get('type') == 'text']
-            return '\n'.join(text_parts) if text_parts else str(response)
+            # Try to extract text from blocks or join string representations
+            try:
+                text_parts = []
+                for block in response:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        text_parts.append(block.get('text', ''))
+                    elif hasattr(block, 'content'):
+                        text_parts.append(block.content)
+                    else:
+                        text_parts.append(str(block))
+                return '\n'.join(text_parts)
+            except Exception:
+                return str(response)
+
         return str(response)
 
     def _extract_message_content(self, message):
         """Extract content from LangChain message objects or dicts."""
+        content = None
         if isinstance(message, dict):
-            return message.get('content', str(message))
-        if hasattr(message, 'content'):
-            return message.content
-        return str(message)
+            content = message.get('content', str(message))
+        elif hasattr(message, 'content'):
+            content = message.content
+        else:
+            return str(message)
+
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text_parts.append(block.get('text', ''))
+                elif isinstance(block, str):
+                    text_parts.append(block)
+                # Failsafe for other unexpected block types
+                else: 
+                    text_parts.append(str(block))
+            return '\n'.join(text_parts)
+        
+        # Handle simple string content
+        if isinstance(content, str):
+            return content
+        
+        # Fallback for all other types
+        return str(content)
 
     def create_step(self, step: str) -> str:
         """
         Use agent to help user create their version of this step.
         Supports clarification loops for ambiguous requests.
+        Allows creating multiple entities in a loop.
         """
         print(f"\n{'='*60}")
         print(f"🎯 CREATE YOUR {step.upper()}")
         print(f"{'='*60}\n")
         
-        # Get user's goal in natural language
-        goal = input(f"Describe the {step} you want to create: ").strip()
-        if not goal:
-            print("Skipping (no description provided)")
-            return ""
-        
-        print(f"\n🔧 Generating {step}...\n")
-        
-        # Allow for clarification loop (max 3 attempts to prevent infinite loops)
-        context = f"Create a {step} based on this description: {goal}"
-        max_attempts = 3
-        
-        for attempt in range(max_attempts):
-            try:
-                # FIX: create_agent expects {"messages": [...]} format
-                response = self.agent.invoke({
-                    "messages": [{
-                        "role": "user",
-                        "content": context
-                    }]
-                })
+        while True:
+            # Get user's goal in natural language
+            prompt_text = f"Describe the {step} you want to create"
+            if step == "surface":
+                prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
+            elif step == "material":
+                prompt_text += " (e.g., 'water', 'UO2 fuel')"
                 
-                # Parse response using new handler
-                output = self._parse_agent_response(response)
-                
-                # Check if agent is asking a clarifying question
-                clarification_phrases = [
-                    "should that be", "what", "which", "natural or enriched",
-                    "light water or heavy water", "h2o or d2o", "enrichment"
-                ]
-                
-                if any(phrase in output.lower() for phrase in clarification_phrases):
-                    print(f"\n🤖 AGENT QUESTION:")
+            goal = input(f"{prompt_text} (or press Enter to finish this step): ").strip()
+            
+            if not goal:
+                print(f"Finished defining {step}s.")
+                break
+            
+            print(f"\n🔧 Generating {step}...\n")
+            
+            # Allow for clarification loop (max 3 attempts)
+            context = f"Create a {step} based on this description: {goal}"
+            max_attempts = 3
+            
+            for attempt in range(max_attempts):
+                try:
+                    # Invoke agent
+                    response = self.agent.invoke({
+                        "messages": [{
+                            "role": "user",
+                            "content": context
+                        }]
+                    })
+                    
+                    # Parse response using robust handler
+                    output = self._parse_agent_response(response)
+                    
+                    # Check if agent is asking a clarifying question
+                    clarification_phrases = [
+                        "should that be", "what", "which", "natural or enriched",
+                        "light water or heavy water", "h2o or d2o", "enrichment",
+                        "boundary condition", "reflective or vacuum"
+                    ]
+                    
+                    if any(phrase in output.lower() for phrase in clarification_phrases):
+                        print(f"\n🤖 AGENT QUESTION:")
+                        print("="*60)
+                        print(output)
+                        print("="*60 + "\n")
+                        
+                        # Get user clarification
+                        clarification = input("Your answer: ").strip()
+                        if not clarification:
+                            print("No clarification provided. Skipping...")
+                            break
+                        
+                        # Update context with clarification
+                        context = f"Based on user's clarification '{clarification}', create the {step}: {goal}"
+                        continue  # Loop back to agent with clarification
+                    
+                    # Success - show final response
+                    print(f"\n" + "="*60)
+                    print("🤖 AGENT RESPONSE:")
                     print("="*60)
                     print(output)
                     print("="*60 + "\n")
+                    break
                     
-                    # Get user clarification
-                    clarification = input("Your answer: ").strip()
-                    if not clarification:
-                        print("No clarification provided. Skipping...")
-                        return ""
-                    
-                    # Update context with clarification
-                    context = f"Based on user's clarification '{clarification}', create the {step}: {goal}"
-                    continue  # Loop back to agent with clarification
-                
-                # Success - show final response
-                print(f"\n" + "="*60)
-                print("🤖 AGENT RESPONSE:")
-                print("="*60)
-                print(output)
-                print("="*60 + "\n")
-                break
-                
-            except Exception as e:
-                print(f"\n❌ Error during agent execution: {e}")
-                print("You can try again or skip this step.\n")
-                import traceback
-                traceback.print_exc()
-                return ""
-        
-        else:
-            print("\n⚠️  Too many clarification attempts. Skipping this step.")
-            return ""
-        
-        # Show the current script state
+                except Exception as e:
+                    print(f"\n❌ Error during agent execution: {e}")
+                    # Print simplified traceback for debugging if needed
+                    import traceback
+                    traceback.print_exc()
+                    break
+            
+            # Show script state after each addition
+            print(f"📝 {len(self.builder.defined[step])} {step}(s) defined so far.")
+            
+        # Show the full current script state before exiting the step
         print("\n" + "="*60)
-        print("📝 CURRENT SCRIPT:")
+        print("📝 CURRENT SCRIPT STATE:")
         print("="*60)
         print(self.builder.get_script())
         print("="*60 + "\n")
