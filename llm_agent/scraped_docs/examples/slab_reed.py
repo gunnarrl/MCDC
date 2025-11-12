@@ -1,7 +1,7 @@
 """Example: slab_reed
 Complexity: intermediate
 Lines: 53
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.PlaneZ, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle
 Path: test/regression/slab_reed/input.py
 """
 

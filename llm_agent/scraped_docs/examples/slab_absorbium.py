@@ -1,7 +1,7 @@
 """Example: slab_absorbium
 Complexity: intermediate
 Lines: 49
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, TallySurface, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.PlaneZ, mcdc.TallyMesh, mcdc.TallySurface, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle
 Path: test/regression/slab_absorbium/input.py
 """
 

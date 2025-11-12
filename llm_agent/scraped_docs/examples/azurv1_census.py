@@ -1,7 +1,7 @@
 """Example: azurv1_census
 Complexity: intermediate
 Lines: 57
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.census_bank_buffer_ratio, mcdc.settings.set_time_census, mcdc.settings.source_bank_buffer_ratio, mcdc.simulation.population_control
 Path: test/regression/azurv1_census/input.py
 """
 

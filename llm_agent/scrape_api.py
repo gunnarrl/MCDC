@@ -1,28 +1,15 @@
-#!/usr/bin/env python3
-"""
- scrape_mcdc_docs.py  –  authoritative scraper for MCDC ReadTheDocs + regression examples
- 1. Scrapes ONLY the 10 functions that have RTD pages
- 2. Parses every regression input.py for real usage patterns (incl. run, MaterialMG, settings…)
- 3. Outputs:
-    – function_docs.json          (RTD, 10 funcs)
-    – examples.jsonl              (metadata for every regression test)
-    – examples/*.py               (individual files w/ header – ready for RAG)
-"""
-
 import json, os, ast, sys
 from pathlib import Path
 from typing import Dict, List, Any, Set
-
 import requests
 from bs4 import BeautifulSoup
 
-# ---------------------------------------------------------------------------
-# CONFIG – adjust paths if your corpus lives elsewhere
+# CONFIG
 CORPUS_ROOT = Path("llm_agent/corpus")
 REGRESSION_DIR = CORPUS_ROOT / "test/regression"
 OUTPUT_DIR = Path("llm_agent/scraped_docs")
 
-# 10 functions that actually have ReadTheDocs pages
+# functions that actually have ReadTheDocs pages
 RTD_FUNCTIONS = [
     "material", "nuclide", "cell", "lattice",
     "surface", "universe", "eigenmode", "setting",
@@ -31,14 +18,11 @@ RTD_FUNCTIONS = [
 
 BASE_URL = "https://mcdc.readthedocs.io/en/stable/pythonapi/generated/mcdc.{}.html"
 
-# ---------------------------------------------------------------------------
 # UTILS
-
 
 def _strip_classifier(text: str) -> str:
     """Remove '(type)' classifier so 'nuclides (list of tuple...)' → 'nuclides'"""
     return text.split("(")[0].strip()
-
 
 def scrape_function_docs(function_name: str) -> Dict[str, Any]:
     """Scrape ONE RTD page. Robust against their HTML structure."""
@@ -85,10 +69,21 @@ def scrape_function_docs(function_name: str) -> Dict[str, Any]:
         "url": url,
     }
 
-
-# ---------------------------------------------------------------------------
 # AST-BASED EXTRACTION  (catches *every* mcdc.* pattern)
 
+def _get_full_attr_name(node: ast.AST) -> str:
+    """
+    Recursively unwraps nested ast.Attribute nodes to get the full
+    dotted name, e.g., 'mcdc.settings.N_particle'.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    elif isinstance(node, ast.Attribute):
+        return f"{_get_full_attr_name(node.value)}.{node.attr}"
+    elif isinstance(node, ast.Call):
+        return _get_full_attr_name(node.func)
+    else:
+        return ast.unparse(node)
 
 def extract_mcdc_functions(code: str) -> Set[str]:
     """Return every distinct mcdc.X construct found in source."""
@@ -99,55 +94,23 @@ def extract_mcdc_functions(code: str) -> Set[str]:
         return found
 
     for node in ast.walk(tree):
-        # ---- 1.  mcdc.Function(...)  or  mcdc.ClassMethod(...)  calls ----
+        # ---- 1.  mcdc.Function(...)  or  mcdc.Class(...)  calls ----
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            # direct:  mcdc.something(...)
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "mcdc":
-                found.add(node.func.attr)
-            # nested:  mcdc.settings.N_particle = ...
-            if (
-                isinstance(node.func.value, ast.Attribute)
-                and isinstance(node.func.value.value, ast.Name)
-                and node.func.value.value.id == "mcdc"
-            ):
-                found.add(node.func.value.attr)  # settings, tally, etc.
+            full_name = _get_full_attr_name(node.func)
+            if full_name.startswith("mcdc."):
+                found.add(full_name)
 
         # ---- 2.  mcdc.settings.X = Y   assignments ----
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                # mcdc.settings.X  (two-level)
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Attribute)
-                    and isinstance(target.value.value, ast.Name)
-                    and target.value.value.id == "mcdc"
-                ):
-                    found.add(target.value.attr)  # settings / tally
-                # mcdc.X = ...  (one-level)
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "mcdc"
-                ):
-                    found.add(target.attr)
+                if isinstance(target, ast.Attribute):
+                    full_name = _get_full_attr_name(target)
+                    if full_name.startswith("mcdc."):
+                        found.add(full_name)
 
-        # ---- 3.  mcdc.run()  direct call ----
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Attribute)
-            and isinstance(node.value.func.value, ast.Name)
-            and node.value.func.value.id == "mcdc"
-            and node.value.func.attr == "run"
-        ):
-            found.add("run")
+    return {f for f in found if f.startswith("mcdc.")}
 
-    return found
-
-
-# ---------------------------------------------------------------------------
 # REGRESSION WALKER
-
 
 def extract_examples_from_regression() -> List[Dict[str, Any]]:
     """Walk every regression test; return metadata + content."""
@@ -178,10 +141,7 @@ def extract_examples_from_regression() -> List[Dict[str, Any]]:
         )
     return examples
 
-
-# ---------------------------------------------------------------------------
 # SAVE HELPERS
-
 
 def save_all(docs: Dict[str, Any], examples: List[Dict[str, Any]]) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,10 +173,7 @@ Path: {ex["path"]}
     print(f"✓ Saved {len(docs)} docs → {docs_path}")
     print(f"✓ Saved {len(examples)} examples → {jsonl_path} & examples/*.py")
 
-
-# ---------------------------------------------------------------------------
 # MAIN
-
 
 def main() -> None:
     print("=== Scraping MCDC Docs (RTD + Regression) ===")
@@ -235,7 +192,6 @@ def main() -> None:
 
     ok = sum(1 for d in docs.values() if not d.get("error"))
     print(f"\n{'='*50}\nDone: {ok}/{len(docs)} docs, {len(examples)} examples\n{'='*50}")
-
 
 if __name__ == "__main__":
     main()

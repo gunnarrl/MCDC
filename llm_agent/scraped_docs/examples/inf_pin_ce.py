@@ -1,7 +1,7 @@
 """Example: inf_pin_ce
 Complexity: advanced
 Lines: 70
-Functions used: Cell, Material, Source, Surface, TallyGlobal, run, settings
+Functions used: mcdc.Cell, mcdc.Material, mcdc.Source, mcdc.Surface.CylinderZ, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.TallyGlobal, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.active_bank_buffer
 Path: test/regression/inf_pin_ce/input.py
 """
 

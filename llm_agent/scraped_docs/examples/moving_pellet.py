@@ -1,7 +1,7 @@
 """Example: moving_pellet
 Complexity: advanced
 Lines: 96
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, run, settings, visualize
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.CylinderZ, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.Surface.PlaneZ, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.active_bank_buffer, mcdc.visualize
 Path: test/regression/moving_pellet/input.py
 """
 

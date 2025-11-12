@@ -10,6 +10,7 @@ class MaterialCalculator:
     """
     Public-domain nuclear data. Calculates atomic compositions only.
     Loads data from nuclear_data.csv
+    SHOULD NOT USE FOR REAL SIMULATIONS - MAY BE INACCURATE OR INCOMPLETE
     """
     
     try:
@@ -127,9 +128,7 @@ class MaterialCalculator:
         
         return composition
 
-# ---------------------------------------------------------------------------
-# MODIFIED TOOL FUNCTION
-# ---------------------------------------------------------------------------
+# TOOL FUNCTION
 
 def get_mcdc_tools(builder: ScriptBuilder):
     """
@@ -194,8 +193,7 @@ def get_mcdc_tools(builder: ScriptBuilder):
 
         try:
             if mode.upper() == "CE":
-                # === THIS IS THE NEW LOGIC ===
-                
+
                 # 1. Calculate the full, precise composition
                 full_composition = MaterialCalculator.calculate_composition(
                     formula_clean, density, enrichment
@@ -235,7 +233,7 @@ def get_mcdc_tools(builder: ScriptBuilder):
                 return f"✓ Created CE material '{name}': {formula_clean} at {density} g/cm³{enrichment_str}"
             
             else:
-                # Multi-Group mode (default) - use provided cross-sections
+                # Multi-Group mode - use provided cross-sections
                 code_parts = [f"{name} = mcdc.MaterialMG("]
                 
                 # Use defaults or provided values
@@ -271,7 +269,7 @@ def get_mcdc_tools(builder: ScriptBuilder):
         """
         Define a multi-group (MG) material with cross-sections.
         
-        Parameters are numpy array strings, e.g.:
+        Parameters are numpy array strings:
         - capture: "[0.5]" for 1-group, "[0.5, 0.3]" for 2-group
         - scatter: "[[0.9]]" for 1-group, "[[0.8, 0.1], [0.05, 0.85]]" for 2-group
         - fission: "[0.1]" (optional)
@@ -279,11 +277,6 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - speed: "[200000.0]" (optional, cm/s)
         
         Example: set_material_mg("fuel", "[0.45]", "[[0.0]]", "[0.55]", "[2.5]")
-        
-        FIX: 
-        - Changed from mcdc.material() to mcdc.MaterialMG()
-        - Parameters now match actual MCDC API
-        - Accept strings and parse them (LLM outputs strings, not Python objects)
         """
         if builder.has_entity("material", name):
             return f"ERROR: Material '{name}' already defined."
@@ -324,8 +317,6 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - nuclide_composition: Dictionary string, e.g. "{'U235': 0.0005, 'U238': 0.022, 'O16': 0.046}"
         
         Example: set_material_ce("fuel", "{'U235': 0.0005, 'U238': 0.022}")
-        
-        FIX: Added CE material support (different from MG)
         """
         if builder.has_entity("material", name):
             return f"ERROR: Material '{name}' already defined."
@@ -363,10 +354,6 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - boundary_condition: Optional, one of: "vacuum", "reflective", "interface" (default)
         
         Example: create_surface("s1", "PlaneX", "x=0.0", "vacuum")
-        
-        FIX:
-        - Changed from mcdc.surface.Type to mcdc.Surface.Type (capital S)
-        - Accept string params instead of list (easier for LLM)
         """
         if builder.has_entity("surface", name):
             return f"ERROR: Surface '{name}' already defined."
@@ -399,11 +386,8 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - fill: Name of material or universe to fill the cell
         
         Example: create_cell("fuel_cell", "+s1 & -s2 & -cy", "fuel")
-        
-        FIX:
-        - Removed 'name=' parameter (not in MCDC API)
-        - If name is empty, don't assign to variable
         """
+
         # Check fill exists
         if not builder.has_entity("material", fill):
             # Could also be a universe, but we're not tracking those yet
@@ -445,8 +429,6 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - isotropic: True for isotropic direction, False for beam
         
         Example: create_source("[0.0, 10.0]", "[0.0, 10.0]", "[0.0, 10.0]", energy_group="0")
-        
-        FIX: Added proper parameter handling for MCDC Source API
         """
         try:
             code_parts = ["mcdc.Source("]
@@ -490,8 +472,7 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - scores: List of scores as string, e.g. "['flux', 'fission']"
         
         Example: create_tally_mesh("MeshUniform", "x=(0.0, 10.0, 100)", "['flux']")
-        
-        FIX: Added tally support
+        NEED TO ADD OTHER FORMS OF TALLY
         """
         try:
             mesh_code = f"mesh = mcdc.{mesh_type}({mesh_params})"
@@ -514,8 +495,7 @@ def get_mcdc_tools(builder: ScriptBuilder):
         - n_batch: Number of batches
         
         Example: set_settings(1000, 10)
-        
-        FIX: Added settings support
+        NEED TO COMPLETE SETTING LIST
         """
         try:
             code = f"mcdc.settings.N_particle = {n_particle}\nmcdc.settings.N_batch = {n_batch}"
@@ -562,8 +542,6 @@ def get_mcdc_tools(builder: ScriptBuilder):
         }
         
         script = builder.get_script()
-        
-        # FIX: Added json import at top of file
         return f"""
 CURRENT SCRIPT:
 {script}
@@ -583,5 +561,5 @@ DEFINED ENTITIES:
         create_tally_mesh,
         set_settings,
         get_current_script,
-        # search_docs  # Commented out - needs retriever access
+        # search_docs  # needs retriever access
     ]

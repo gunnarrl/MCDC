@@ -1,7 +1,7 @@
 """Example: cooper2
 Complexity: intermediate
 Lines: 63
-Functions used: Cell, MaterialMG, MeshUniform, Source, Surface, TallyMesh, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshUniform, mcdc.Source, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.simulation.implicit_capture
 Path: test/regression/cooper2/input.py
 """
 

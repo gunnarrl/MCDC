@@ -1,7 +1,7 @@
 """Example: inf_shem361_td_census
 Complexity: advanced
 Lines: 74
-Functions used: Cell, MaterialMG, Source, Surface, TallyGlobal, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyGlobal, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.active_bank_buffer, mcdc.settings.census_bank_buffer_ratio, mcdc.settings.set_time_census, mcdc.settings.source_bank_buffer_ratio, mcdc.simulation.population_control
 Path: test/regression/inf_shem361_td_census/input.py
 """
 

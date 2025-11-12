@@ -1,7 +1,7 @@
 """Example: azurv1
 Complexity: intermediate
 Lines: 51
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle
 Path: test/regression/azurv1/input.py
 """
 

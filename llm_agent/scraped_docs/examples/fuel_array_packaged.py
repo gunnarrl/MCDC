@@ -1,7 +1,7 @@
 """Example: fuel_array_packaged
 Complexity: advanced
 Lines: 109
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, Universe, run, settings, simulation, visualize
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.CylinderX, mcdc.Surface.CylinderZ, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.Surface.PlaneZ, mcdc.Surface.Sphere, mcdc.TallyMesh, mcdc.Universe, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.active_bank_buffer, mcdc.simulation.set_root_universe, mcdc.visualize
 Path: test/regression/fuel_array_packaged/input.py
 """
 

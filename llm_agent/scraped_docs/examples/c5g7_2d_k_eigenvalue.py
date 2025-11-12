@@ -1,7 +1,7 @@
 """Example: c5g7_2d_k_eigenvalue
 Complexity: advanced
 Lines: 207
-Functions used: Cell, Lattice, MaterialMG, MeshStructured, Source, Surface, TallyMesh, Universe, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.Lattice, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.CylinderZ, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.TallyMesh, mcdc.Universe, mcdc.run, mcdc.settings.N_particle, mcdc.settings.census_bank_buffer_ratio, mcdc.settings.set_eigenmode, mcdc.settings.source_bank_buffer_ratio, mcdc.simulation.population_control, mcdc.simulation.set_root_universe
 Path: test/regression/c5g7_2d_k_eigenvalue/input.py
 """
 

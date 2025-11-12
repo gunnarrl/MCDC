@@ -59,46 +59,65 @@ def format_api_doc_readable(func_name: str, data: Dict[str, Any]) -> str:
                 parts.append(f"  • {name}: {desc}")
             else:
                 parts.append(f"  • {param}")
-    
     # Returns
     if "returns" in data:
         parts.append(f"\nReturns:\n{data['returns']}")
     
     # Example usage (if available)
     parts.append("\nExample usage:")
-    if "MaterialMG" in func_name or func_name == "material":
+    if "MaterialMG" in func_name:
         parts.append("""
-fuel = mcdc.MaterialMG(
-    capture=np.array([0.45]),
-    scatter=np.array([[0.0]]),
-    fission=np.array([0.55]),
-    nu_p=np.array([2.5])
-)
-""")
+        fuel = mcdc.MaterialMG(
+            capture=np.array([0.45]),
+            scatter=np.array([[0.0]]),
+            fission=np.array([0.55]),
+            nu_p=np.array([2.5])
+        )
+        """)
+    elif "material" in func_name:
+        parts.append("""
+        # Set materials
+        fuel = mcdc.Material(
+            nuclide_composition={
+                "U235": 0.0005581658948833916 * 7e-2,
+                "U238": 0.022404594715383263 * 7e-2,
+                "O16": 0.045831301393656466,
+            }
+        )""")
     elif "Surface" in func_name or func_name == "surface":
         parts.append("""
-# Plane surface
-s1 = mcdc.Surface.PlaneX(x=0.0, boundary_condition="vacuum")
+        # Plane surface
+        s1 = mcdc.Surface.PlaneX(x=0.0, boundary_condition="vacuum")
 
-# Cylinder surface
-s2 = mcdc.Surface.CylinderZ(center=[0.0, 0.0], radius=1.5)
-""")
+        # Cylinder surface
+        s2 = mcdc.Surface.CylinderZ(center=[0.0, 0.0], radius=1.5)
+        """)
     elif func_name == "cell":
         parts.append("""
-# Cell with region and material fill
-fuel_cell = mcdc.Cell(region=+s1 & -s2, fill=fuel_material)
-""")
+        # Cell with region and material fill
+        fuel_cell = mcdc.Cell(region=+s1 & -s2, fill=fuel_material)
+        """)
     elif func_name == "source":
         parts.append("""
-# Isotropic point source
-mcdc.Source(
-    x=[0.0, 10.0],
-    y=[0.0, 10.0],
-    isotropic=True,
-    energy_group=0
-)
-""")
-    
+        # Isotropic point source
+        mcdc.Source(
+            x=[0.0, 10.0],
+            y=[0.0, 10.0],
+            isotropic=True,
+            energy_group=0
+        )
+        """)
+    elif "tally" in func_name:
+        parts.append("""
+        # Mesh tally
+        mesh = mcdc.MeshStructured(z=np.linspace(0.0, 6.0, 61))
+        mcdc.TallyMesh(
+            mesh=mesh, mu=np.linspace(-1.0, 1.0, 32 + 1), scores=["flux", "collision"]
+        )
+
+        # Surface tally
+        mcdc.TallySurface(surface=s4, scores=["net-current"])
+        """)
     return "\n".join(parts)
 
 
@@ -168,7 +187,7 @@ def infer_complexity(content: str, test_name: str) -> str:
     has_eigenmode = 'eigenmode' in content or 'k_eigenvalue' in test_name
     has_time_dep = '_td' in test_name or 'time=' in content
     
-    if has_lattice or has_universe or (has_eigenmode and len(code_lines) > 100):
+    if has_lattice or has_universe or has_eigenmode:
         return "advanced"
     elif mcdc_calls > 20 or len(code_lines) > 60:
         return "intermediate"
@@ -207,13 +226,14 @@ def load_documents() -> List[Document]:
                     "priority": "3"
                 }
             ))
-        logging.info(f"  ✓ Loaded {len(rtd_data)} RTD docs")
+        logging.info(f" Loaded {len(rtd_data)} RTD docs")
     else:
-        logging.warning(f"  ⚠ RTD docs not found at {RTD_DOCS_PATH}")
+        logging.warning(f" RTD docs not found at {RTD_DOCS_PATH}")
     
     # ═══════════════════════════════════════════════════════════════
     # 2. AUTO-GENERATED STUBS (medium quality, readable format)
     # ═══════════════════════════════════════════════════════════════
+
     if AUTO_API_PATH.exists():
         logging.info(f"Loading auto-generated docs from {AUTO_API_PATH}")
         auto_data = json.loads(AUTO_API_PATH.read_text(encoding="utf-8"))
@@ -267,11 +287,11 @@ def load_documents() -> List[Document]:
                 for section, code, test_name in chunks:
                     # Add semantic header
                     page_content = f"""Example: {test_name} ({complexity})
-Demonstrates: {section.title()} creation in MCDC
+                    Demonstrates: {section.title()} creation in MCDC
 
-Code:
-{code}
-"""
+                    Code:
+                    {code}
+                    """
                     
                     docs.append(Document(
                         page_content=page_content,
@@ -290,13 +310,13 @@ Code:
             else:
                 # If no sections found, store whole example with header
                 page_content = f"""Example: {test_name} ({complexity})
-Complete MCDC simulation script
+                Complete MCDC simulation script
 
-Functions used: {', '.join(functions_used[:10])}
+                Functions used: {', '.join(functions_used[:10])}
 
-Code:
-{content}
-"""
+                Code:
+                {content}
+                """
                 
                 docs.append(Document(
                     page_content=page_content,
@@ -315,11 +335,11 @@ Code:
             
             example_count += 1
         
-        logging.info(f"  ✓ Loaded {example_count} examples → {chunk_count} chunks")
+        logging.info(f" Loaded {example_count} examples → {chunk_count} chunks")
     else:
-        logging.warning(f"  ⚠ Examples directory not found at {EXAMPLES_DIR}")
+        logging.warning(f"Examples directory not found at {EXAMPLES_DIR}")
     
-    logging.info(f"✓ Total documents: {len(docs)}")
+    logging.info(f"Total documents: {len(docs)}")
     return docs
 
 
@@ -359,47 +379,22 @@ def create_vectorstore(docs: List[Document]) -> Chroma:
         collection_name="mcdc_docs",
         collection_metadata={"hnsw:space": "cosine"}
     )
-    logging.info("✓ Index created and persisted")
+    logging.info("Index created and persisted")
     return vectorstore
 
 
-def verify_index(vectorstore: Chroma):
-    """Quick sanity check that index is queryable."""
-    logging.info("\nVerifying index with test queries...")
-    test_queries = [
-        ("material", "how to create material with capture cross-section"),
-        ("surface", "create cylindrical surface"),
-        ("source", "define isotropic source")
-    ]
-    
-    for section, query in test_queries:
-        # Test without filter
-        results = vectorstore.similarity_search(query, k=2)
-        sources = [r.metadata.get("source", "?") for r in results]
-        sections = [r.metadata.get("section", "?") for r in results]
-        
-        logging.info(f"  '{query}'")
-        logging.info(f"    → sources: {sources}, sections: {sections}")
-        
-        # Show first 100 chars of top result
-        if results:
-            preview = results[0].page_content[:100].replace('\n', ' ')
-            logging.info(f"    → preview: {preview}...")
-
-
 def main():
-    """Full pipeline: load → index → verify."""
+    """load → index → verify."""
     logging.info("="*60)
     logging.info("Starting RAG index build with human-readable documents")
     logging.info("="*60)
     
     docs = load_documents()
     if not docs:
-        logging.error("❌ No documents found. Run extract_api_static.py first.")
+        logging.error("No documents found. Run scrape_api and generate_docs first.")
         exit(1)
     
     vectorstore = create_vectorstore(docs)
-    verify_index(vectorstore)
     
     logging.info("\n" + "="*60)
     logging.info("✓ Index build complete!")

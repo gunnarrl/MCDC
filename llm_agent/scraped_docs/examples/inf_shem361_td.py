@@ -1,7 +1,7 @@
 """Example: inf_shem361_td
 Complexity: intermediate
 Lines: 68
-Functions used: Cell, MaterialMG, Source, Surface, TallyGlobal, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyGlobal, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.active_bank_buffer
 Path: test/regression/inf_shem361_td/input.py
 """
 

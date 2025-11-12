@@ -1,7 +1,7 @@
 """Example: slab_isobeam_td_census
 Complexity: intermediate
 Lines: 55
-Functions used: Cell, MaterialMG, MeshUniform, Source, Surface, TallyMesh, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshUniform, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.settings.set_time_census, mcdc.settings.source_bank_buffer_ratio, mcdc.simulation.population_control
 Path: test/regression/slab_isobeam_td_census/input.py
 """
 

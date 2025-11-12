@@ -1,7 +1,7 @@
 """Example: sphere_in_cube
 Complexity: intermediate
 Lines: 64
-Functions used: Cell, MaterialMG, MeshUniform, Source, Surface, TallyCell, TallyMesh, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshUniform, mcdc.Source, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.Surface.PlaneZ, mcdc.Surface.Sphere, mcdc.TallyCell, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle, mcdc.simulation.implicit_capture
 Path: test/regression/sphere_in_cube/input.py
 """
 

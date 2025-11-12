@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
- extract_api_static.py  –  scrape MCDC API from source code *without importing*
- Use this when pdoc/sphinx fail due to broken dependencies.
-"""
-
 import ast, json
 from pathlib import Path
 from typing import Dict, List, Any, Set

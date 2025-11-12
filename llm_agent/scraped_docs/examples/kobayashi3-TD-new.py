@@ -1,7 +1,7 @@
 """Example: kobayashi3-TD-new
 Complexity: advanced
 Lines: 77
-Functions used: Cell, MaterialMG, MeshUniform, Source, Surface, TallyGlobal, TallyMesh, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshUniform, mcdc.Source, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.Surface.PlaneZ, mcdc.TallyGlobal, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_particle, mcdc.simulation.implicit_capture
 Path: test/regression/kobayashi3-TD-new/input.py
 """
 

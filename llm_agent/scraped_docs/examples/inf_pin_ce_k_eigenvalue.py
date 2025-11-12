@@ -1,7 +1,7 @@
 """Example: inf_pin_ce_k_eigenvalue
 Complexity: advanced
 Lines: 74
-Functions used: Cell, Material, Source, Surface, TallyGlobal, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.Material, mcdc.Source, mcdc.Surface.CylinderZ, mcdc.Surface.PlaneX, mcdc.Surface.PlaneY, mcdc.TallyGlobal, mcdc.run, mcdc.settings.N_particle, mcdc.settings.census_bank_buffer_ratio, mcdc.settings.set_eigenmode, mcdc.simulation.population_control
 Path: test/regression/inf_pin_ce_k_eigenvalue/input.py
 """
 

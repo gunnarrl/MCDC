@@ -1,7 +1,7 @@
 """Example: slab_isobeam_td
 Complexity: intermediate
 Lines: 50
-Functions used: Cell, MaterialMG, MeshUniform, Source, Surface, TallyMesh, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshUniform, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_batch, mcdc.settings.N_particle
 Path: test/regression/slab_isobeam_td/input.py
 """
 

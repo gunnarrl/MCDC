@@ -1,7 +1,7 @@
 """Example: inf_shem361_k_eigenvalue
 Complexity: intermediate
 Lines: 63
-Functions used: Cell, MaterialMG, Source, Surface, TallyGlobal, run, settings, simulation
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyGlobal, mcdc.run, mcdc.settings.N_particle, mcdc.settings.set_eigenmode, mcdc.settings.source_bank_buffer_ratio, mcdc.simulation.population_control
 Path: test/regression/inf_shem361_k_eigenvalue/input.py
 """
 

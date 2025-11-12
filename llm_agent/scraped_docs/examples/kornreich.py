@@ -1,7 +1,7 @@
 """Example: kornreich
 Complexity: advanced
 Lines: 81
-Functions used: Cell, MaterialMG, MeshStructured, Source, Surface, TallyMesh, run, settings
+Functions used: mcdc.Cell, mcdc.MaterialMG, mcdc.MeshStructured, mcdc.Source, mcdc.Surface.PlaneX, mcdc.TallyMesh, mcdc.run, mcdc.settings.N_particle, mcdc.settings.census_bank_buffer_ratio, mcdc.settings.set_eigenmode, mcdc.settings.source_bank_buffer_ratio
 Path: test/regression/kornreich/input.py
 """
 

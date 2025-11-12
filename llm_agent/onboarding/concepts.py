@@ -1,8 +1,3 @@
-"""
-concepts.py – Hardcoded conceptual lessons for MCDC 7-step onboarding
-Each lesson provides: (1) high-level concept, (2) key parts/parameters, (3) common questions
-"""
-
 CONCEPT_LESSONS = {
     "material": {
         "concept": (

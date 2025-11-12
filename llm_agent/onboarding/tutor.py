@@ -56,7 +56,6 @@ Use friendly, educational tone. Keep it concise but informative.
 Answer:"""
         self.rag_prompt = rag_prompt  # Store for reuse in step-specific chains
         
-        from utils import create_rag_chain_with_prompt
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
         
         # Pass builder to tool factory
@@ -64,9 +63,6 @@ Answer:"""
         
         self.llm = llm
         
-        # FIX: create_agent expects a PLAIN STRING prompt (not ChatPromptTemplate)
-        # For create_agent, we only need system_prompt - no placeholders like {input} or {agent_scratchpad}
-        # The agent framework handles message routing internally
         system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
 
 ---
@@ -122,10 +118,8 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             system_prompt=system_prompt  # Plain string, not ChatPromptTemplate
         )
     
-    # ─────────────────────────────────────────────────────────────────────────────
-    # PHASE 3: Query expansion for better retrieval
+    # Query expansion for better retrieval
     # Combines user query with relevant technical terms to improve document recall
-    # ─────────────────────────────────────────────────────────────────────────────
     def expand_query(self, query: str, step: str) -> str:
         """
         Expand query with step-specific keywords for better retrieval.
@@ -139,10 +133,8 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         
         return f"{base_query} {keywords}"
     
-    # ─────────────────────────────────────────────────────────────────────────────
-    # PHASE 3: Create step-filtered retriever
+    # Create step-filtered retriever
     # Ensures we only retrieve examples/documentation relevant to current workflow step
-    # ─────────────────────────────────────────────────────────────────────────────
     def get_step_retriever(self, step: str):
         """
         Create a retriever that filters by workflow step.
@@ -150,18 +142,16 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         """
         try:
             # Access the underlying vectorstore from our existing retriever
-            # This avoids reloading the vectorstore while allowing dynamic filtering
             vectorstore = self.retriever.vectorstore
             
             # Create a new retriever with step-specific metadata filter
             return vectorstore.as_retriever(
                 search_kwargs={
-                    "k": 3,  # Retrieve top 3 documents
-                    "filter": {"section": step}  # ← KEY: Filter by workflow step
+                    "k": 5,  # Retrieve top 5 documents
+                    "filter": {"section": step}  # Filter by workflow step
                 }
             )
         except AttributeError:
-            # Fallback: if vectorstore attribute isn't accessible, return unfiltered retriever
             print(f"Debug: Could not access vectorstore for step filtering, using general retriever")
             return self.retriever
     
@@ -175,15 +165,13 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         lesson = CONCEPT_LESSONS[step]
         
         print(f"\n{'='*60}")
-        print(f"📖 STEP: {step.upper()}")
+        print(f"STEP: {step.upper()}")
         print(f"{'='*60}\n")
         print(f"Concept:\n{lesson['concept']}\n")
         print(f"Key parts:\n{lesson['parts']}\n")
         
-        # ─────────────────────────────────────────────────────────────────────────
-        # PHASE 3: Show step-specific examples from RAG
+        # Show step-specific examples from RAG
         # Uses query expansion + metadata filtering for maximum relevance
-        # ─────────────────────────────────────────────────────────────────────────
         try:
             # Create retriever filtered for this specific step
             step_retriever = self.get_step_retriever(step)
@@ -195,7 +183,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             examples = step_retriever.invoke(expanded_query)
             
             if examples:
-                print(f"\n📄 Example from regression tests:")
+                print(f"\nExample from regression tests:")
                 print("-" * 60)
                 # Show first 500 chars of first example
                 print(examples[0].page_content[:500])
@@ -210,10 +198,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
             print(f"  {i}. {q}")
         
-        # ─────────────────────────────────────────────────────────────────────────
-        # PHASE 3: Create step-specific RAG chain for Q&A
-        # This ensures answers are tailored to the current workflow step
-        # ─────────────────────────────────────────────────────────────────────────
+        # Create step-specific RAG chain for Q&A
         step_rag_chain = create_rag_chain_with_prompt(
             self.llm,
             self.get_step_retriever(step),
@@ -221,22 +206,21 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         )
         
         while True:
-            q = input(f"\n❓ Ask a question about {step} (or press Enter to continue): ").strip()
+            q = input(f"\nAsk a question about {step} (or press Enter to continue): ").strip()
             if not q:
                 break
             
             try:
-                # Expand user query to improve retrieval
+                # Expand user query
                 expanded_q = self.expand_query(q, step)
                 
-                # Use step-specific RAG chain for more relevant answers
                 answer = step_rag_chain.invoke(expanded_q)
                 print(f"\n🤖 {answer}\n")
             except Exception as e:
-                print(f"\n❌ Error: {e}\n")
+                print(f"\nError: {e}\n")
         
         # Check if ready to create
-        ready = input(f"\n✅ Ready to create your {step}? [Y/n]: ").strip().lower()
+        ready = input(f"\nReady to create your {step}? [Y/n]: ").strip().lower()
         return ready != "n"
     
     def _parse_agent_response(self, response) -> str:
@@ -244,7 +228,6 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         if isinstance(response, str):
             return response
             
-        # Handle standard LangChain AgentExecutor output (dict with 'output' key)
         if isinstance(response, dict):
             if 'output' in response:
                 return response['output']
@@ -311,7 +294,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         Allows creating multiple entities in a loop.
         """
         print(f"\n{'='*60}")
-        print(f"🎯 CREATE YOUR {step.upper()}")
+        print(f"CREATE YOUR {step.upper()}")
         print(f"{'='*60}\n")
         
         while True:
@@ -321,6 +304,15 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                 prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
             elif step == "material":
                 prompt_text += " (e.g., 'water', 'UO2 fuel')"
+            elif step == "cell":
+                prompt_text += " (e.g., 'cell filled with fuel, bounded by s1 and s2')"
+            elif step == "source":
+                prompt_text += " (e.g., 'point source at origin with 1 MeV energy')"
+            elif step == "tally":
+                prompt_text += " (e.g., 'mesh tally from x=0 to 10 with 100 bins')"
+            elif step == "settings":
+                prompt_text += " (e.g., '1000 particles, 10 batches')"
+                
                 
             goal = input(f"{prompt_text} (or press Enter to finish this step): ").strip()
             
@@ -328,7 +320,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                 print(f"Finished defining {step}s.")
                 break
             
-            print(f"\n🔧 Generating {step}...\n")
+            print(f"\nGenerating {step}...\n")
             
             # Allow for clarification loop (max 3 attempts)
             context = f"Create a {step} based on this description: {goal}"
@@ -370,7 +362,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                         context = f"Based on user's clarification '{clarification}', create the {step}: {goal}"
                         continue  # Loop back to agent with clarification
                     
-                    # Success - show final response
+                    # show final response
                     print(f"\n" + "="*60)
                     print("🤖 AGENT RESPONSE:")
                     print("="*60)
@@ -386,11 +378,11 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                     break
             
             # Show script state after each addition
-            print(f"📝 {len(self.builder.defined[step])} {step}(s) defined so far.")
+            print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
             
         # Show the full current script state before exiting the step
         print("\n" + "="*60)
-        print("📝 CURRENT SCRIPT STATE:")
+        print("CURRENT SCRIPT STATE:")
         print("="*60)
         print(self.builder.get_script())
         print("="*60 + "\n")
@@ -402,7 +394,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         Full 7-step interactive curriculum.
         """
         print("\n" + "="*60)
-        print("🎓 Welcome to MCDC Onboarding!")
+        print("Welcome to MCDC Onboarding!")
         print("="*60)
         print("\nI'll guide you through building a complete MCDC simulation.")
         print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
@@ -433,14 +425,14 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         final_script = self.builder.get_script()
         
         print("\n" + "="*60)
-        print("🎉 ONBOARDING COMPLETE!")
+        print("ONBOARDING COMPLETE!")
         print("="*60)
         print("\nYour final MCDC script:\n")
         print(final_script)
         print("="*60)
         
         # Offer to save
-        save = input("\n💾 Save this script? [Y/n]: ").strip().lower()
+        save = input("\nSave this script? [Y/n]: ").strip().lower()
         if save != "n":
             filename = input("Filename (e.g., my_simulation.py): ").strip()
             if not filename:
@@ -450,10 +442,10 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             
             try:
                 Path(filename).write_text(final_script)
-                print(f"\n✅ Saved to {filename}")
+                print(f"\nSaved to {filename}")
                 print(f"\nTo run: python {filename}")
             except Exception as e:
-                print(f"\n❌ Error saving file: {e}")
+                print(f"\nError saving file: {e}")
         
         print("\n👋 Thanks for using MCDC Tutor!\n")
 
