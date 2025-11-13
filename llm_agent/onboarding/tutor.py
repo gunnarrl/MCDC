@@ -37,7 +37,7 @@ class MCDCTutor:
         self.builder = ScriptBuilder()
         
         # Set up retriever and RAG chain for Q&A
-        self.retriever = load_retriever(k=3)  # Increased from 2 to 3 for better coverage
+        self.retriever = load_retriever(k=5)
         
         # FIX: Improved RAG prompt for educational, beginner-friendly responses
         rag_prompt = """You are MCDC-Tutor, explaining Monte Carlo particle transport concepts to beginners.
@@ -59,8 +59,8 @@ Answer:"""
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
         
         # Pass builder to tool factory
-        self.tools = get_mcdc_tools(self.builder)
-        
+        self.tools = get_mcdc_tools(self.builder, self.retriever)
+
         self.llm = llm
         
         system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
@@ -69,28 +69,29 @@ Answer:"""
 ## 💡 CRITICAL MATERIAL MODE INSTRUCTIONS (CE is now the default)
 
 - **Continuous-Energy (CE)**: **Default mode.** Use this most of the time. It requires calculating the atomic composition and automatically adds a note about the required `MCDC_XSLIB` environment variable.
-- **Multi-Group (MG)**: Use this mode **only for teaching basic concepts** or when the user explicitly provides cross-section data (e.g., capture="[1.0]").
+- **Multi-Group (MG)**: Use this mode **only for teaching basic concepts** or when the user asks or provides cross-section data (e.g., capture="[1.0]").
 
 ---
 ## ❓ WHEN TO ASK CLARIFYING QUESTIONS
 
 Ask **ONE** clarifying question when a parameter is critical and unknown:
-✅ DO ASK: "Should that be light water (H₂O) or heavy water (D₂O)?" (affects neutron physics significantly)
-✅ DO ASK: "What enrichment for uranium fuel? PWR uses 3-5%, research reactors up to 20%." (critical safety parameter)
-✅ DO ASK: "Natural uranium (0.72% U-235) or enriched?" (determines if material is fissile)
-❌ DON'T ASK: "What density should I use?" (use standard values from MaterialCalculator)
-❌ DON'T ASK: "What cross-section values?" (CE mode handles this; MG uses sensible defaults if needed)
+ DO ASK: "Should that be light water (H₂O) or heavy water (D₂O)?" (affects neutron physics significantly)
+ DO ASK: "What enrichment for uranium fuel? PWR uses 3-5%, research reactors up to 20%." (critical safety parameter)
+ DO ASK: "Natural uranium (0.72% U-235) or enriched?" (determines if material is fissile)
+ DON'T ASK: "What density should I use?" (use standard values from MaterialCalculator)
+ DON'T ASK: "What cross-section values?" (CE mode handles this; MG uses sensible defaults if needed)
 
 ---
 ## ⚙️ WORKFLOW FOR EVERY REQUEST
 
 1.  **Check Status:** Call `get_current_script()` to check what entities already exist.
-2.  **Clarify:** If the request is ambiguous (e.g., "uranium fuel"), ask **ONE** clarifying question, if needed.
-3.  **Convert & Set Defaults:**
+2.  **Search Docs (If Needed):** If the user asks "how to do X", "what are the parameters for Y", or "what's an example of Z", use `search_docs(query)` **before** trying to call other tools.
+3.  **Clarify:** If the request is ambiguous (e.g., "uranium fuel"), ask **ONE** clarifying question, if needed.
+4.  **Convert & Set Defaults:**
     * If the user names a **common material** (e.g., "water", "stainless steel"), **convert the name to its formula** (e.g., "H2O", "Fe0.7Cr0.2Ni0.1").
     * Look up and use the **default density** from `MaterialCalculator.COMMON_MATERIALS` for the formula.
-4.  **Tool Call:** Call the appropriate tool with **ALL** required parameters, defaulting to `mode="CE"` unless MG is explicitly requested or required for teaching.
-5.  **Explain:** Explain what you created and why.
+5.  **Tool Call:** Call the appropriate tool with **ALL** required parameters, defaulting to `mode="CE"` unless MG is explicitly requested or required for teaching.
+6.  **Explain:** Explain what you created and why.
 
 ---
 ## 📝 TOOL PARAMETER FORMAT
@@ -111,11 +112,10 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
 5.  You: [Call `create_material_from_formula`(**`"fuel"`**, **`"UO2"`**, **`10.5`**, **`mode="CE"`**, **`enrichment=0.03`**)] (Step 4)
 6.  Response: "✓ Created **CE material** 'fuel': UO2 at 10.5 g/cm³ (enriched to 3.0% U-235). **NOTE:** CE mode requires MCDC\_XSLIB environment variable."""
         
-        # Create agent using create_agent with string prompt
         self.agent = create_agent(
             model=self.llm,
             tools=self.tools,
-            system_prompt=system_prompt  # Plain string, not ChatPromptTemplate
+            system_prompt=system_prompt 
         )
     
     # Query expansion for better retrieval
@@ -147,8 +147,8 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             # Create a new retriever with step-specific metadata filter
             return vectorstore.as_retriever(
                 search_kwargs={
-                    "k": 5,  # Retrieve top 5 documents
-                    "filter": {"section": step}  # Filter by workflow step
+                    "k": 5, 
+                    "filter": {"section": step} 
                 }
             )
         except AttributeError:
@@ -173,13 +173,9 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         # Show step-specific examples from RAG
         # Uses query expansion + metadata filtering for maximum relevance
         try:
-            # Create retriever filtered for this specific step
+
             step_retriever = self.get_step_retriever(step)
-            
-            # Expand query with step-relevant keywords
             expanded_query = self.expand_query("beginner simple example", step)
-            
-            # Retrieve relevant examples (already filtered by step)
             examples = step_retriever.invoke(expanded_query)
             
             if examples:
