@@ -6,8 +6,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from pathlib import Path
 
-DB_PATH = os.path.join("vectorstore")
+LLM_AGENT_DIR = Path(__file__).parent
+DB_PATH = str(LLM_AGENT_DIR / "vectorstore")
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 def load_llm(temperature=0, model="gemini-2.5-flash"):

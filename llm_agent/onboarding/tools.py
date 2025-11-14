@@ -3,9 +3,13 @@ import numpy as np
 import pandas as pd
 import re
 from langchain.tools import tool
-from onboarding.script_builder import ScriptBuilder
+from .script_builder import ScriptBuilder
 from typing import Dict, List, Set, Any, Optional
 from pydantic import BaseModel, Field
+from pathlib import Path
+
+
+ONBOARDING_DIR = Path(__file__).parent
 
 class MaterialCalculator:
     """
@@ -16,7 +20,7 @@ class MaterialCalculator:
     
     try:
         # Load data from the CSV file
-        _data_df = pd.read_csv("onboarding/nuclear_data.csv")
+        _data_df = pd.read_csv(ONBOARDING_DIR / "nuclear_data.csv")
         _data_df.set_index('Isotope', inplace=True)
         
         # Recreate the old dictionary structure for compatibility
@@ -35,7 +39,7 @@ class MaterialCalculator:
         print("FATAL ERROR: nuclear_data.csv not found.")
     
     try:
-        _materials_df = pd.read_csv("onboarding/material_properties.csv")
+        _materials_df = pd.read_csv(ONBOARDING_DIR / "material_properties.csv")
         # Create a searchable dictionary from this dataframe
         COMMON_MATERIALS = {}
         for _, row in _materials_df.iterrows():
@@ -220,40 +224,40 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         Create material from chemical formula (MG or CE mode).
         ... (docstring unchanged) ...
         """
-        if builder.has_entity("material", name):
-            return f"ERROR: Material '{name}' already defined."
-        
-        formula_clean = formula.strip() if formula else ""
-        # Use density from args, store it in a local var
-        local_density = density 
-        
-        # Auto-detect common materials
-        detected_formula = None
-        if not formula_clean:
-            for mat_key, info in MaterialCalculator.COMMON_MATERIALS.items():
-                if name.lower() in info['aliases'] or info['formula'].lower() == name.lower():
-                    formula_clean = info['formula']
-                    if local_density is None:
-                        local_density = info['density']
-                    detected_formula = info['formula']
-                    break
-        
-        # If still no formula, try to use the name as the formula
-        if not formula_clean:
-            formula_clean = name
+        try: 
+            if builder.has_entity("material", name):
+                return f"ERROR: Material '{name}' already defined."
             
-        # If density is still unknown, error out (it's required for CE)
-        if mode.upper() == "CE" and local_density is None:
-             # Try one last time to get density from common materials
-            if formula_clean.upper() in [v['formula'] for v in MaterialCalculator.COMMON_MATERIALS.values()]:
-                 for k, v in MaterialCalculator.COMMON_MATERIALS.items():
-                     if v['formula'] == formula_clean.upper():
-                         local_density = v['density']
-                         break
-            else:
-                return f"ERROR: Density is required for CE material '{name}' and was not provided or found."
+            formula_clean = formula.strip() if formula else ""
+            # Use density from args, store it in a local var
+            local_density = density 
+            
+            # Auto-detect common materials
+            detected_formula = None
+            if not formula_clean:
+                for mat_key, info in MaterialCalculator.COMMON_MATERIALS.items():
+                    if name.lower() in info['aliases'] or info['formula'].lower() == name.lower():
+                        formula_clean = info['formula']
+                        if local_density is None:
+                            local_density = info['density']
+                        detected_formula = info['formula']
+                        break
+            
+            # If still no formula, try to use the name as the formula
+            if not formula_clean:
+                formula_clean = name
+                
+            # If density is still unknown, error out (it's required for CE)
+            if mode.upper() == "CE" and local_density is None:
+                # Try one last time to get density from common materials
+                if formula_clean.upper() in [v['formula'] for v in MaterialCalculator.COMMON_MATERIALS.values()]:
+                    for k, v in MaterialCalculator.COMMON_MATERIALS.items():
+                        if v['formula'] == formula_clean.upper():
+                            local_density = v['density']
+                            break
+                else:
+                    return f"ERROR: Density is required for CE material '{name}' and was not provided or found."
 
-        try:
             if mode.upper() == "CE":
 
                 # 1. Calculate the full, precise composition
@@ -267,9 +271,9 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                     # Uranium is a special case: always keep U235 and U238
                     if isotope.startswith("U"):
                         if enrichment is not None and isotope in ["U235", "U238"]:
-                             filtered_composition[isotope] = value
+                            filtered_composition[isotope] = value
                         elif enrichment is None and isotope in MaterialCalculator.DOMINANT_ISPOTOPES: # Note: Fixed a typo here, DOMINANT_ISOTOPES
-                             filtered_composition[isotope] = value # Keep natural U
+                            filtered_composition[isotope] = value # Keep natural U
                     # For all other elements, check the dominant list
                     elif isotope in MaterialCalculator.DOMINANT_ISOTOPES:
                         filtered_composition[isotope] = value
@@ -315,12 +319,10 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 builder.add_line(code, "material", name)
                 formula_str = f"{formula_clean} at {local_density} g/cm³" if (formula_clean and local_density) else ""
                 return f"✓ Created MG material '{name}': {formula_str} (no external data needed)"
-                
         except Exception as e:
-            # Handle potential typo in MaterialCalculator
-            if 'DOMINANT_ISPOTOPES' in str(e):
-                 return "ERROR: Typo detected in MaterialCalculator.DOMINANT_ISOTOPES. Please check variable name."
-            return f"ERROR: {str(e)}"
+            return f"ERROR: Could not create {entity_type}. Please check your inputs and try again."
+
+            
         
     @tool(args_schema=SetMaterialMGArgs)
     def set_material_mg(

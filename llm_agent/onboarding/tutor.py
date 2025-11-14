@@ -1,7 +1,7 @@
-from onboarding.concepts import CONCEPT_LESSONS
-from utils import load_llm, load_retriever, create_rag_chain_with_prompt
-from onboarding.script_builder import ScriptBuilder
-from onboarding.tools import get_mcdc_tools
+from llm_agent.onboarding.concepts import CONCEPT_LESSONS
+from llm_agent.utils import load_llm, load_retriever, create_rag_chain_with_prompt
+from llm_agent.onboarding.script_builder import ScriptBuilder
+from llm_agent.onboarding.tools import get_mcdc_tools
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pathlib import Path
@@ -58,12 +58,12 @@ Answer:"""
         
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
         
-        # Pass builder to tool factory
-        self.tools = get_mcdc_tools(self.builder, self.retriever)
+        try:
+            self.tools = get_mcdc_tools(self.builder, self.retriever)
 
-        self.llm = llm
-        
-        system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
+            self.llm = llm
+            
+            system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
 
 ---
 ## 💡 CRITICAL MATERIAL MODE INSTRUCTIONS (CE is now the default)
@@ -112,11 +112,15 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
 5.  You: [Call `create_material_from_formula`(**`"fuel"`**, **`"UO2"`**, **`10.5`**, **`mode="CE"`**, **`enrichment=0.03`**)] (Step 4)
 6.  Response: "✓ Created **CE material** 'fuel': UO2 at 10.5 g/cm³ (enriched to 3.0% U-235). **NOTE:** CE mode requires MCDC\_XSLIB environment variable."""
         
-        self.agent = create_agent(
-            model=self.llm,
-            tools=self.tools,
-            system_prompt=system_prompt 
-        )
+            self.agent = create_agent(
+                model=self.llm,
+                tools=self.tools,
+                system_prompt=system_prompt 
+            )
+        except Exception as e:
+            print(f"Warning: Failed to initialize agent properly: {e}")
+            print("Tutor may not function correctly. Check API keys and dependencies.")
+            raise
     
     # Query expansion for better retrieval
     # Combines user query with relevant technical terms to improve document recall
@@ -293,6 +297,9 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         print(f"CREATE YOUR {step.upper()}")
         print(f"{'='*60}\n")
         
+         consecutive_errors = 0  
+        max_consecutive_errors = 3 
+
         while True:
             # Get user's goal in natural language
             prompt_text = f"Describe the {step} you want to create"
@@ -364,14 +371,24 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                     print("="*60)
                     print(output)
                     print("="*60 + "\n")
+
+                    success = True
+                    consecutive_errors = 0 
                     break
                     
                 except Exception as e:
-                    print(f"\n❌ Error during agent execution: {e}")
-                    # Print simplified traceback for debugging if needed
-                    import traceback
-                    traceback.print_exc()
-                    break
+                    consecutive_errors += 1
+                    print(f"\n❌ An unexpected error occurred while processing your request.")
+                    print(f"   Error details: {type(e).__name__}: {str(e)}")
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"\nMultiple consecutive errors detected. Skipping this step to avoid repeated failures.")
+                        print("   Please check your API key and network connection, then try again.")
+                        print(f"   Let's try again. Please rephrase your request if possible.\n")
+                        break
+
+            if not success:
+                continue
             
             # Show script state after each addition
             print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
@@ -452,7 +469,7 @@ if __name__ == "__main__":
     
     Usage:
         export GEMINI_API_KEY="your-key-here"
-        python onboarding/tutor.py
+        python -m llm_agent.onboarding.tutor
     """
     try:
         # Load LLM with low temperature for deterministic code generation
