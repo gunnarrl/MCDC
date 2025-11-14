@@ -53,8 +53,6 @@ def load_retriever(db_path: str = DB_PATH, k: int = 3):
         embedding_function=embeddings
     )
     
-    # FIX: as_retriever() returns a retriever that supports .invoke()
-    # This is the correct API for LangChain 1.0+
     return vectordb.as_retriever(search_kwargs={"k": k})
 
 def format_docs(docs):

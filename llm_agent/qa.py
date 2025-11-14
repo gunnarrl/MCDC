@@ -24,11 +24,11 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
+from utils import load_llm, load_retriever
 
 # ── CONFIGURATION ──
 DB_PATH = "llm_agent/vectorstore"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LLM_MODEL = "gemini-2.0-flash-exp"
 RETRIEVAL_K = 5  # Retrieve top 5 documents
 
 # ── COLORS FOR CLI ──
@@ -148,22 +148,6 @@ def classify_query(question: str) -> Dict[str, Any]:
 # RAG COMPONENTS
 # ══════════════════════════════════════════════════════════════════════
 
-def load_llm(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
-    """Load Gemini LLM with API key validation."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    
-    if not api_key:
-        raise EnvironmentError(
-            "GEMINI_API_KEY not found in environment variables. "
-            "Please set it with: export GEMINI_API_KEY='your-api-key-here'"
-        )
-    
-    return ChatGoogleGenerativeAI(
-        model=LLM_MODEL,
-        temperature=temperature,
-        google_api_key=api_key
-    )
-
 
 def load_vectorstore() -> Chroma:
     """Load Chroma vectorstore."""
@@ -190,6 +174,7 @@ def format_docs_with_sources(docs: List[Document]) -> str:
     formatted = []
     
     for i, doc in enumerate(docs, 1):
+        
         # Extract metadata
         doc_type = doc.metadata.get("type", "unknown")
         source = doc.metadata.get("source", "unknown")
