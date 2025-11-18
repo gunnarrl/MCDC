@@ -6,6 +6,17 @@ from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pathlib import Path
 
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 class MCDCTutor:
     """
     Interactive tutor for learning MCDC through a 7-step workflow.
@@ -32,9 +43,10 @@ class MCDCTutor:
         "run": "run execute simulate output h5 tally results k-effective convergence statistics batch cycle"
     }
     
-    def __init__(self, llm):
-        # Create our own builder instance (not a global)
+    def __init__(self, llm, input_func=input):
+        # Create our own builder instance
         self.builder = ScriptBuilder()
+        self.input_func = input_func
         
         self.doc_filter = {
             "type": {
@@ -72,51 +84,45 @@ Answer:"""
             system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
 
 ---
-## 💡 CRITICAL MATERIAL MODE INSTRUCTIONS (CE is now the default)
+## CRITICAL MATERIAL MODE INSTRUCTIONS (MG is DEFAULT)
 
-- **Continuous-Energy (CE)**: **Default mode.** Use this most of the time. It requires calculating the atomic composition and automatically adds a note about the required `MCDC_XSLIB` environment variable.
-- **Multi-Group (MG)**: Use this mode **for teaching basic concepts** or when the user asks or provides cross-section data (e.g., capture="[1.0]"). It does not contain nuclide data, so it requires explicit capture/scatter/fission parameters. It does not require `MCDC_XSLIB`.
+**Multi-Group (MG) is the DEFAULT mode.** Continuous-Energy (CE) should ONLY be used if the user explicitly asks for "continuous energy" or "CE".
+
+### PROTOCOL FOR CREATING MATERIALS (MG MODE)
+When the user asks to create a material:
+
+1.  **ANALYZE**: Did the user explicitly provide cross-section values (e.g., "capture=[1.0]")?
+    * **YES (Explicit)**: Use **ONLY** the provided parameters. Do **NOT** add unrequested physics (e.g., if User says "capture=[1.0]", do NOT add Scatter).
+    * **NO (Abstract)**: If the user only gives a name (e.g., "create water"), estimate reasonable physics values (Capture + Scatter).
+
+2.  **PROPOSE**: Display the values you intend to use **BEFORE** calling any tools.
+    * *Explicit Case*: "You specified Capture=[1.0]. I will create the material with just that. Does this look correct?"
+    * *Abstract Case*: "For Water, I suggest Capture=[0.01], Scatter=[0.8]. Does this look correct?"
+
+3.  **CONFIRM/EDIT**: Wait for the user to say "Yes" or provide different numbers.
+
+4.  **EXECUTE**: Once confirmed, call `create_material_from_formula` using `mode="MG"` and the agreed-upon arrays.
+
+### PROTOCOL FOR CE MODE (Only if requested)
+1.  If the user explicitly asks for CE, you must calculate atomic composition.
+2.  Remind them that `MCDC_XSLIB` is required.
 
 ---
-## ❓ WHEN TO ASK CLARIFYING QUESTIONS
-
-Ask **ONE** clarifying question when a parameter is critical and unknown:
- DO ASK: "Should that be light water (H₂O) or heavy water (D₂O)?" (affects neutron physics significantly)
- DO ASK: "What enrichment for uranium fuel? PWR uses 3-5%, research reactors up to 20%." (critical safety parameter)
- DO ASK: "Natural uranium (0.72% U-235) or enriched?" (determines if material is fissile)
- DON'T ASK: "What density should I use?" (use standard values from MaterialCalculator)
- DON'T ASK: "What cross-section values?" (CE mode handles this; MG use sensible defaults if needed)
-
----
-## ⚙️ WORKFLOW FOR EVERY REQUEST
+## WORKFLOW FOR EVERY REQUEST
 
 1.  **Check Status:** Call `get_current_script()` to check what entities already exist.
-2.  **Search Docs (If Needed):** If the user asks "how to do X", "what are the parameters for Y", or "what's an example of Z", use `search_docs(query)` **before** trying to call other tools.
-3.  **Clarify:** If the request is ambiguous (e.g., "uranium fuel"), ask **ONE** clarifying question, if needed.
-4.  **Convert & Set Defaults:**
-    * If the user names a **common material** (e.g., "water", "stainless steel"), **convert the name to its formula** (e.g., "H2O", "Fe0.7Cr0.2Ni0.1").
-    * Look up and use the **default density** from `MaterialCalculator.COMMON_MATERIALS` for the formula.
-5.  **Tool Call:** Call the appropriate tool with **ALL** required parameters, defaulting to `mode="CE"` unless MG is explicitly requested or required for teaching.
-6.  **Explain:** Explain what you created and why.
+2.  **Search Docs (If Needed):** If the user asks "how to do X", use `search_docs(query)` before trying to call other tools.
+3.  **Clarify:** If the request is ambiguous (e.g., "boundary condition"), ask a clarifying question.
+4.  **Tool Call:** Call the appropriate tool.
+5.  **Explain:** Explain what you created and why.
 
 ---
-## 📝 TOOL PARAMETER FORMAT
+## TOOL PARAMETER FORMAT
 
 -   All array parameters **MUST be strings**: e.g., `capture="[1.0]"` NOT `capture=[1.0]`.
 -   2D arrays: e.g., `scatter="[[0.8, 0.1], [0.05, 0.85]]"`.
 -   Surfaces params: e.g., `params="x=0.0"` or `params="center=[0.0, 0.0], radius=1.5"`.
-
----
-## EXAMPLE FLOW (CE Default)
-
-**Scenario:** User wants 3% enriched fuel.
-
-1.  User: "create uranium fuel"
-2.  You: "Should that be natural uranium or enriched? PWR fuel is typically **3-5% U-235**." (Step 2)
-3.  User: "3% enriched"
-4.  You: [**Internal Conversion:** Name="fuel" → Formula="UO2", Density=10.5] (Step 3)
-5.  You: [Call `create_material_from_formula`(**`"fuel"`**, **`"UO2"`**, **`10.5`**, **`mode="CE"`**, **`enrichment=0.03`**)] (Step 4)
-6.  Response: "✓ Created **CE material** 'fuel': UO2 at 10.5 g/cm³ (enriched to 3.0% U-235). **NOTE:** CE mode requires MCDC\_XSLIB environment variable."""
+"""
         
             self.agent = create_agent(
                 model=self.llm,
@@ -124,12 +130,11 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                 system_prompt=system_prompt 
             )
         except Exception as e:
-            print(f"Warning: Failed to initialize agent properly: {e}")
+            print(f"{Colors.FAIL}Warning: Failed to initialize agent properly: {e}{Colors.ENDC}")
             print("Tutor may not function correctly. Check API keys and dependencies.")
             raise
     
     # Query expansion for better retrieval
-    # Combines user query with relevant technical terms to improve document recall
     def expand_query(self, query: str, step: str) -> str:
         """
         Expand query with step-specific keywords for better retrieval.
@@ -143,8 +148,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         
         return f"{base_query} {keywords}"
     
-    # Create step-filtered retriever
-    # Ensures we only retrieve examples/documentation relevant to current workflow step
+    # Create step-filtered retriever so we only get examples relevant to the current step
     def get_step_retriever(self, step: str):
         """
         Create a retriever that filters by workflow step.
@@ -181,37 +185,33 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         """
         lesson = CONCEPT_LESSONS[step]
         
-        print(f"\n{'='*60}")
+        print(f"\n{Colors.HEADER}{'='*60}")
         print(f"STEP: {step.upper()}")
-        print(f"{'='*60}\n")
-        print(f"Concept:\n{lesson['concept']}\n")
-        print(f"Key parts:\n{lesson['parts']}\n")
+        print(f"{'='*60}{Colors.ENDC}\n")
+        print(f"{Colors.BOLD}Concept:{Colors.ENDC}\n{lesson['concept']}\n")
+        print(f"{Colors.BOLD}Key parts:{Colors.ENDC}\n{lesson['parts']}\n")
         
         # Show step-specific examples from RAG
-        # Uses query expansion + metadata filtering for maximum relevance
         try:
-
             step_retriever = self.get_step_retriever(step)
             expanded_query = self.expand_query("beginner simple example", step)
             examples = step_retriever.invoke(expanded_query)
             
             if examples:
-                print(f"\nExample from regression tests:")
+                print(f"\n{Colors.CYAN}Example from regression tests:")
                 print("-" * 60)
                 # Show first 500 chars of first example
                 print(examples[0].page_content[:500])
                 if len(examples[0].page_content) > 500:
                     print("...")
-                print("-" * 60)
+                print("-" * 60 + f"{Colors.ENDC}")
         except Exception as e:
             print(f"\n(Could not load example: {e})")
         
-        # Q&A loop - user can ask questions about the concept
-        print(f"\n💡 Common questions about {step}:")
+        print(f"\n{Colors.YELLOW}Common questions about {step}:{Colors.ENDC}")
         for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
             print(f"  {i}. {q}")
         
-        # Create step-specific RAG chain for Q&A
         step_rag_chain = create_rag_chain_with_prompt(
             self.llm,
             self.get_step_retriever(step),
@@ -219,7 +219,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         )
         
         while True:
-            q = input(f"\nAsk a question about {step} (or press Enter to continue): ").strip()
+            q = self.input_func(f"\n{Colors.BOLD}Ask a question...").strip()
             if not q:
                 break
             
@@ -227,14 +227,14 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                 # Expand user query
                 expanded_q = self.expand_query(q, step)
                 
-                print(f"\n🤖 ", end="", flush=True)
+                print(f"\n{Colors.BLUE}TUTOR: ", end="", flush=True)
                 
                 for chunk in step_rag_chain.stream(expanded_q):
                     print(chunk, end="", flush=True)
                 
-                print("\n")
+                print(f"{Colors.ENDC}\n")
             except Exception as e:
-                print(f"\nError: {e}")
+                print(f"\n{Colors.FAIL}Error: {e}{Colors.ENDC}")
         
         # Check if ready to create
         ready = input(f"\nReady to create your {step}? [Y/n]: ").strip().lower()
@@ -307,87 +307,91 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
     def create_step(self, step: str) -> str:
         """
         Use agent to help user create their version of this step.
-        Supports clarification loops for ambiguous requests.
-        Allows creating multiple entities in a loop.
+        Supports clarification loops with memory.
         """
-        print(f"\n{'='*60}")
+        print(f"\n{Colors.HEADER}{'='*60}")
         print(f"CREATE YOUR {step.upper()}")
-        print(f"{'='*60}\n")
+        print(f"{'='*60}{Colors.ENDC}\n")
         
         consecutive_errors = 0  
         max_consecutive_errors = 3 
 
         while True:
-            # Get user's goal in natural language
+            # Get user's goal
             prompt_text = f"Describe the {step} you want to create"
             if step == "surface":
                 prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
             elif step == "material":
                 prompt_text += " (e.g., 'water', 'UO2 fuel')"
-            elif step == "cell":
-                prompt_text += " (e.g., 'cell filled with fuel, bounded by s1 and s2')"
-            elif step == "source":
-                prompt_text += " (e.g., 'point source at origin with 1 MeV energy')"
-            elif step == "tally":
-                prompt_text += " (e.g., 'mesh tally from x=0 to 10 with 100 bins')"
-            elif step == "settings":
-                prompt_text += " (e.g., '1000 particles, 10 batches')"
-                
-                
-            goal = input(f"{prompt_text} (or press Enter to finish this step): ").strip()
             
+            goal = self.input_func(f"{Colors.BOLD}{prompt_text}...").strip()   
+
             if not goal:
-                print(f"Finished defining {step}s.")
+                print(f"{Colors.GREEN}Finished defining {step}s.{Colors.ENDC}")
                 break
             
             print(f"\nGenerating {step}...\n")
             
-            # Allow for clarification loop (max 3 attempts)
-            context = f"Create a {step} based on this description: {goal}"
-            max_attempts = 3
+            # FIX 1: Initialize conversation history so Agent remembers proposals
+            messages = [
+                {"role": "user", "content": f"Create a {step} based on this description: {goal}"}
+            ]
+            
+            max_attempts = 5 
             
             for attempt in range(max_attempts):
                 try:
-                    # Invoke agent
-                    response = self.agent.invoke({
-                        "messages": [{
-                            "role": "user",
-                            "content": context
-                        }]
-                    })
+                    # Pass full message history
+                    response = self.agent.invoke({"messages": messages})
                     
-                    # Parse response using robust handler
                     output = self._parse_agent_response(response)
                     
-                    # Check if agent is asking a clarifying question
+                    # FIX 2: Check for SUCCESS first to ignore keywords in the final summary
+                    # If the agent says "I have created" or "Defined material", stop.
+                    if "created" in output.lower() or "defined" in output.lower():
+                        print(f"\n{Colors.GREEN}" + "="*60)
+                        print("AGENT RESPONSE:")
+                        print("="*60)
+                        print(output)
+                        print("="*60 + f"{Colors.ENDC}\n")
+                        success = True
+                        consecutive_errors = 0
+                        break
+
+                    # FIX 3: Refined clarification phrases (removed 'capture=' to be safer)
                     clarification_phrases = [
                         "should that be", "what", "which", "natural or enriched",
                         "light water or heavy water", "h2o or d2o", "enrichment",
-                        "boundary condition", "reflective or vacuum"
+                        "boundary condition", "reflective or vacuum",
+                        "i suggest", "i recommend", "does this look correct", 
+                        "would you like", "do you want", "can you confirm",
+                        "how about", "already exists", "already defined", 
+                        "different name", "unable to", "cannot create", 
+                        "please specify", "please provide", "?"
                     ]
                     
                     if any(phrase in output.lower() for phrase in clarification_phrases):
-                        print(f"\n🤖 AGENT QUESTION:")
+                        print(f"\n{Colors.CYAN}AGENT MESSAGE:")
                         print("="*60)
                         print(output)
-                        print("="*60 + "\n")
+                        print("="*60 + f"{Colors.ENDC}\n")
                         
-                        # Get user clarification
-                        clarification = input("Your answer: ").strip()
+                        clarification = self.input_func(f"{Colors.BOLD}Your answer: {Colors.ENDC}").strip()
                         if not clarification:
                             print("No clarification provided. Skipping...")
                             break
                         
-                        # Update context with clarification
-                        context = f"Based on user's clarification '{clarification}', create the {step}: {goal}"
-                        continue  # Loop back to agent with clarification
+                        # FIX 4: Append to history instead of overwriting context
+                        messages.append({"role": "assistant", "content": output})
+                        messages.append({"role": "user", "content": clarification})
+                        continue 
                     
-                    # show final response
-                    print(f"\n" + "="*60)
-                    print("🤖 AGENT RESPONSE:")
+                    # Fallback success print if no triggers matched
+                    print(f"\n{Colors.GREEN}" + "="*60)
+                    print("AGENT RESPONSE:")
                     print("="*60)
                     print(output)
-                    print("="*60 + "\n")
+                    print("="*60 + f"{Colors.ENDC}\n")
 
                     success = True
                     consecutive_errors = 0 
@@ -395,22 +399,16 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                     
                 except Exception as e:
                     consecutive_errors += 1
-                    print(f"\n❌ An unexpected error occurred while processing your request.")
-                    print(f"   Error details: {type(e).__name__}: {str(e)}")
+                    print(f"\n{Colors.FAIL}An unexpected error occurred.")
+                    print(f"   Error details: {type(e).__name__}: {str(e)}{Colors.ENDC}")
                     
                     if consecutive_errors >= max_consecutive_errors:
-                        print(f"\nMultiple consecutive errors detected. Skipping this step to avoid repeated failures.")
-                        print("   Please check your API key and network connection, then try again.")
-                        print(f"   Let's try again. Please rephrase your request if possible.\n")
+                        print(f"\n{Colors.RED}Multiple errors. Skipping step.{Colors.ENDC}\n")
                         break
 
-            if not success:
-                continue
-            
-            # Show script state after each addition
+            # Show script state
             print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
             
-        # Show the full current script state before exiting the step
         print("\n" + "="*60)
         print("CURRENT SCRIPT STATE:")
         print("="*60)
@@ -424,7 +422,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         Full 7-step interactive curriculum.
         """
         print("\n" + "="*60)
-        print("Welcome to MCDC Onboarding!")
+        print(f"{Colors.HEADER}Welcome to MCDC Onboarding!{Colors.ENDC}")
         print("="*60)
         print("\nI'll guide you through building a complete MCDC simulation.")
         print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
@@ -440,31 +438,31 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         ]
         
         for step, description in steps:
-            print(f"\n{'#'*60}")
+            print(f"\n{Colors.HEADER}{'#'*60}")
             print(f"# Step: {description}")
-            print(f"{'#'*60}")
+            print(f"{'#'*60}{Colors.ENDC}")
             
             # Teach concept and check if user wants to create
             if self.teach_concept(step):
                 self.create_step(step)
             else:
-                print(f"⏭️  Skipping {step}.")
+                print(f"Skipping {step}.")
                 continue
         
         # Final script
         final_script = self.builder.get_script()
         
         print("\n" + "="*60)
-        print("ONBOARDING COMPLETE!")
+        print(f"{Colors.GREEN}ONBOARDING COMPLETE!{Colors.ENDC}")
         print("="*60)
         print("\nYour final MCDC script:\n")
         print(final_script)
         print("="*60)
         
         # Offer to save
-        save = input("\nSave this script? [Y/n]: ").strip().lower()
+        save = input(f"\n{Colors.BOLD}Save this script? [Y/n]: {Colors.ENDC}").strip().lower()
         if save != "n":
-            filename = input("Filename (e.g., my_simulation.py): ").strip()
+            filename = input(f"{Colors.BOLD}Filename (e.g., my_simulation.py): {Colors.ENDC}").strip()
             if not filename:
                 filename = "mcdc_simulation.py"
             if not filename.endswith(".py"):
@@ -472,12 +470,12 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             
             try:
                 Path(filename).write_text(final_script)
-                print(f"\nSaved to {filename}")
+                print(f"\n{Colors.GREEN}Saved to {filename}{Colors.ENDC}")
                 print(f"\nTo run: python {filename}")
             except Exception as e:
-                print(f"\nError saving file: {e}")
+                print(f"\n{Colors.FAIL}Error saving file: {e}{Colors.ENDC}")
         
-        print("\n👋 Thanks for using MCDC Tutor!\n")
+        print(f"\n{Colors.CYAN}Thanks for using MCDC Tutor!{Colors.ENDC}\n")
 
 
 if __name__ == "__main__":
@@ -489,18 +487,14 @@ if __name__ == "__main__":
         python -m llm_agent.onboarding.tutor
     """
     try:
-        # Load LLM with low temperature for deterministic code generation
+
         llm = load_llm(temperature=0.1)
-        
-        # Create tutor instance
         tutor = MCDCTutor(llm)
-        
-        # Run the interactive onboarding
         tutor.run_onboarding()
         
     except KeyboardInterrupt:
-        print("\n\n👋 Exiting. Your progress was not saved.")
+        print("\n\nExiting. Your progress was not saved.")
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+        print(f"\nFatal error: {e}")
         import traceback
         traceback.print_exc()

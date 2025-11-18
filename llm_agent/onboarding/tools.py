@@ -147,8 +147,8 @@ class MaterialCalculator:
 class CreateMaterialFormulaArgs(BaseModel):
     name: str = Field(..., description="Variable name for the material")
     formula: Optional[str] = Field(None, description="Chemical formula (e.g., 'H2O', 'UO2'). If None, tries to use 'name'.")
-    density: Optional[float] = Field(None, description="Density in g/cm³. If None, tries to find a default.")
-    mode: str = Field("CE", description="Mode, 'CE' (default) or 'MG'.")
+    density: Optional[float] = Field(None, description="Density in g/cm³. Required for CE mode. Optional for MG.")
+    mode: str = Field("MG", description="Mode, 'MG' (default) or 'CE'.")
     capture: Optional[str] = Field(None, description="MG capture cross-section, e.g., '[0.02]'.")
     scatter: Optional[str] = Field(None, description="MG scatter cross-section, e.g., '[[0.08]]'.")
     fission: Optional[str] = Field(None, description="MG fission cross-section, e.g., '[0.1]'.")
@@ -191,6 +191,10 @@ class CreateTallyMeshArgs(BaseModel):
     mesh_params: str = Field(..., description="Parameters for mesh, e.g., 'x=(0.0, 10.0, 100)'")
     scores: str = Field(..., description="List of scores as string, e.g., \"['flux', 'fission']\"")
 
+class CreateTallySurfaceArgs(BaseModel):
+    surface: str = Field(..., description="Name of the surface to tally on")
+    scores: str = Field(..., description="List of scores, e.g. \"['net-current', 'flux']\"")
+
 class SetSettingsArgs(BaseModel):
     n_particle: int = Field(..., description="Number of particles per batch")
     n_batch: int = Field(..., description="Number of batches")
@@ -213,7 +217,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         name: str,
         formula: Optional[str] = None,
         density: Optional[float] = None,
-        mode: str = "CE",
+        mode: str = "MG",
         capture: Optional[str] = None,
         scatter: Optional[str] = None,
         fission: Optional[str] = None,
@@ -222,14 +226,13 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
     ) -> str:
         """
         Create material from chemical formula (MG or CE mode).
-        ... (docstring unchanged) ...
+        MG is default. If MG, captures/scatter must be provided.
         """
         try: 
             if builder.has_entity("material", name):
                 return f"ERROR: Material '{name}' already defined."
             
             formula_clean = formula.strip() if formula else ""
-            # Use density from args, store it in a local var
             local_density = density 
             
             # Auto-detect common materials
@@ -243,13 +246,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                         detected_formula = info['formula']
                         break
             
-            # If still no formula, try to use the name as the formula
             if not formula_clean:
                 formula_clean = name
                 
-            # If density is still unknown, error out (it's required for CE)
+            # Only enforce density requirement for CE mode
             if mode.upper() == "CE" and local_density is None:
-                # Try one last time to get density from common materials
                 if formula_clean.upper() in [v['formula'] for v in MaterialCalculator.COMMON_MATERIALS.values()]:
                     for k, v in MaterialCalculator.COMMON_MATERIALS.items():
                         if v['formula'] == formula_clean.upper():
@@ -259,26 +260,23 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                     return f"ERROR: Density is required for CE material '{name}' and was not provided or found."
 
             if mode.upper() == "CE":
-
-                # 1. Calculate the full, precise composition
+                # Calculate the full, precise composition
                 full_composition = MaterialCalculator.calculate_composition(
                     formula_clean, local_density, enrichment
                 )
                 
-                # 2. Filter for dominant isotopes
+                # Filter for dominant isotopes
                 filtered_composition = {}
                 for isotope, value in full_composition.items():
-                    # Uranium is a special case: always keep U235 and U238
                     if isotope.startswith("U"):
                         if enrichment is not None and isotope in ["U235", "U238"]:
                             filtered_composition[isotope] = value
-                        elif enrichment is None and isotope in MaterialCalculator.DOMINANT_ISPOTOPES: # Note: Fixed a typo here, DOMINANT_ISOTOPES
-                            filtered_composition[isotope] = value # Keep natural U
-                    # For all other elements, check the dominant list
+                        elif enrichment is None and isotope in MaterialCalculator.DOMINANT_ISOTOPES:
+                            filtered_composition[isotope] = value 
                     elif isotope in MaterialCalculator.DOMINANT_ISOTOPES:
                         filtered_composition[isotope] = value
 
-                # 3. Build the code string
+                # Build the code string
                 comp_lines = [
                     f"        '{iso}': {val:.16e}," 
                     for iso, val in filtered_composition.items()
@@ -299,11 +297,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 return f"Created CE material '{name}': {formula_clean} at {local_density} g/cm³{enrichment_str}"
             
             else:
-                # Multi-Group mode - use provided cross-sections
+                # Multi-Group mode - same as set_material_mg
                 code_parts = [f"{name} = mcdc.MaterialMG("]
                 
-                # Use defaults or provided values
-                cap = capture if capture else "[0.1]"  # Default to some absorption
+                # Use defaults if not provided
+                cap = capture if capture else "[0.1]" 
                 code_parts.append(f"    capture=np.array({cap})")
                 
                 if scatter:
@@ -317,10 +315,9 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 code = "".join(code_parts)
                 
                 builder.add_line(code, "material", name)
-                formula_str = f"{formula_clean} at {local_density} g/cm³" if (formula_clean and local_density) else ""
-                return f"✓ Created MG material '{name}': {formula_str} (no external data needed)"
+                return f"Created MG material '{name}'"
         except Exception as e:
-            return f"ERROR: Could not create {entity_type}. Please check your inputs and try again."
+            return f"ERROR: Could not create material. Please check your inputs and try again."
 
             
         
@@ -334,8 +331,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         speed: Optional[str] = None
     ) -> str:
         """
-        Define a multi-group (MG) material with cross-sections.
-        ...
+        Define a multi-group (MG) material with cross-sections
         """
         if builder.has_entity("material", name):
             return f"ERROR: Material '{name}' already defined."
@@ -361,7 +357,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             code = "".join(code_parts)
             
             builder.add_line(code, "material", name)
-            return f"✓ Defined MG material: {name}"
+            return f"Defined MG material: {name}"
             
         except Exception as e:
             return f"ERROR: Failed to parse parameters: {str(e)}"
@@ -369,14 +365,12 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
     @tool(args_schema=SetMaterialCEArgs)
     def set_material_ce(name: str, nuclide_composition: str) -> str:
         """
-        Define a continuous-energy (CE) material with nuclide composition.
-        ...
+        Define a continuous-energy (CE) material with nuclide composition
         """
         if builder.has_entity("material", name):
             return f"ERROR: Material '{name}' already defined."
         
         try:
-            # Validate it's a dict-like string
             comp_dict = eval(nuclide_composition)
             if not isinstance(comp_dict, dict):
                 return "ERROR: nuclide_composition must be a dictionary"
@@ -396,8 +390,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         boundary_condition: Optional[str] = None
     ) -> str:
         """
-        Create a geometric surface.
-        ...
+        Create a geometric surface
         """
         if builder.has_entity("surface", name):
             return f"ERROR: Surface '{name}' already defined."
@@ -414,7 +407,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             code = f"{name} = mcdc.Surface.{surface_type}({params}{bc_str})"
             
             builder.add_line(code, "surface", name)
-            return f"✓ Defined surface: {name} ({surface_type})"
+            return f"Defined surface: {name} ({surface_type})"
             
         except Exception as e:
             return f"ERROR: Failed to create surface: {str(e)}"
@@ -428,7 +421,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
 
         # Check fill exists
         if not builder.has_entity("material", fill):
-            # Could also be a universe, but we're not tracking those yet
+            # Could also be a universe, but not yet implemented
             return f"ERROR: Fill '{fill}' not defined. Define the material first."
         
         try:
@@ -436,12 +429,12 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             if name:
                 code = f"{name} = mcdc.Cell(region={region}, fill={fill})"
                 builder.add_line(code, "cell", name)
-                return f"✓ Defined cell: {name}"
+                return f"Defined cell: {name}"
             else:
                 # Anonymous cell
                 code = f"mcdc.Cell(region={region}, fill={fill})"
                 builder.add_line(code, "cell", f"_anon_cell_{len(builder.defined['cell'])}")
-                return f"✓ Defined anonymous cell with fill={fill}"
+                return f"Defined anonymous cell with fill={fill}"
                 
         except Exception as e:
             return f"ERROR: Failed to create cell: {str(e)}"
@@ -456,8 +449,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         isotropic: bool = True
     ) -> str:
         """
-        Create a particle source.
-        ...
+        Create a particle source
         """
         try:
             code_parts = ["mcdc.Source("]
@@ -481,7 +473,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             code = "".join(code_parts)
             
             builder.add_line(code, "source", f"_source_{len(builder.defined['source'])}")
-            return f"✓ Defined source"
+            return f"Defined source"
             
         except Exception as e:
             return f"ERROR: Failed to create source: {str(e)}"
@@ -493,8 +485,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         scores: str
     ) -> str:
         """
-        Create a mesh tally.
-        ...
+        Create a mesh tally
         """
         try:
             mesh_code = f"mesh = mcdc.{mesh_type}({mesh_params})"
@@ -502,7 +493,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             
             builder.add_line(mesh_code, "tally", f"_mesh_{len(builder.defined['tally'])}")
             builder.add_line(tally_code, "tally", f"_tally_{len(builder.defined['tally'])}")
-            return f"✓ Defined mesh tally"
+            return f"Defined mesh tally"
             
         except Exception as e:
             return f"ERROR: Failed to create tally: {str(e)}"
@@ -510,22 +501,36 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
     @tool(args_schema=SetSettingsArgs)
     def set_settings(n_particle: int, n_batch: int) -> str:
         """
-        Set simulation settings.
-        ...
+        Set simulation settings
         """
         try:
             code = f"mcdc.settings.N_particle = {n_particle}\nmcdc.settings.N_batch = {n_batch}"
             builder.add_line(code, "settings", "_settings")
-            return f"✓ Set N_particle={n_particle}, N_batch={n_batch}"
+            return f"Set N_particle={n_particle}, N_batch={n_batch}"
             
         except Exception as e:
             return f"ERROR: Failed to set settings: {str(e)}"
     
+    @tool(args_schema=CreateTallySurfaceArgs)
+    def create_tally_surface(surface: str, scores: str) -> str:
+        """
+        Create a surface tally.
+        """
+        try:
+            # Check surface exists
+            if not builder.has_entity("surface", surface):
+                return f"ERROR: Surface '{surface}' not defined."
+
+            code = f"mcdc.TallySurface(surface={surface}, scores={scores})"
+            builder.add_line(code, "tally", f"_tally_surf_{len(builder.defined['tally'])}")
+            return f"Defined surface tally on {surface}"
+        except Exception as e:
+            return f"ERROR: Failed to create surface tally: {str(e)}"
+
     @tool(args_schema=SearchDocsArgs)
     def search_docs(query: str) -> str:
         """
         Search MCDC documentation for examples and API details.
-        ...
         """
         try:
             # 1. Use the passed-in retriever
@@ -550,8 +555,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
     @tool
     def get_current_script() -> str:
         """
-        Get the current state of the script being built.
-        ...
+        Get the current state of the script being built
         """
         summary = {
             "materials": list(builder.defined["material"]),
@@ -580,6 +584,7 @@ DEFINED ENTITIES:
         create_cell,
         create_source,
         create_tally_mesh,
+        create_tally_surface,
         set_settings,
         get_current_script,
         search_docs
