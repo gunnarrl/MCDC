@@ -365,7 +365,7 @@ def load_pdf_documents_enhanced() -> List[Document]:
    
     logging.info(f"Loading PDFs page-by-page from {PHYSICS_DOCS_DIR}")
    
-    pdf_files = list(PHYSICS_DOCS_DIR.glob("*.py"))
+    pdf_files = list(PHYSICS_DOCS_DIR.glob("*.pdf"))
    
     for pdf_path in pdf_files:
         try:
