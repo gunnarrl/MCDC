@@ -72,6 +72,8 @@ The interactive session will begin. Follow the prompts to build your simulation!
 To test out the Q&A, run
 
 ```bash
-python llm_agent/qa.py
+python llm_agent/qa.py or llm_agent/improved_qa.py
 ```
 and ask any questions you may have.
+
+Any feedback is very helpful.
