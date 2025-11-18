@@ -36,16 +36,16 @@ def get_embeddings():
         model_kwargs={"device": "cpu"}
     )
 
-def load_retriever(db_path: str = DB_PATH, k: int = 3):
+def load_retriever(db_path: str = DB_PATH, k: int = 3, search_filter: dict = None):
     """
     Load retriever from ChromaDB.
     
-    FIX: Returns BaseRetriever that supports .invoke() method (LangChain 1.0+)
+    Supports optional metadata filtering.
     """
     if not os.path.exists(db_path):
         raise FileNotFoundError(
             f"Vector store not found at {db_path}. "
-            "Please run: python llm_agent/build_index.py"
+            "Please run your new build_index.py script."
         )
     
     embeddings = get_embeddings()
@@ -55,7 +55,11 @@ def load_retriever(db_path: str = DB_PATH, k: int = 3):
         embedding_function=embeddings
     )
     
-    return vectordb.as_retriever(search_kwargs={"k": k})
+    search_kwargs = {"k": k}
+    if search_filter:
+        search_kwargs["filter"] = search_filter
+    
+    return vectordb.as_retriever(search_kwargs=search_kwargs)
 
 def format_docs(docs):
     """Format retrieved documents for RAG context."""

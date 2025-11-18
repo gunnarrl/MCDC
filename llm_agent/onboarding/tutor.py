@@ -36,10 +36,16 @@ class MCDCTutor:
         # Create our own builder instance (not a global)
         self.builder = ScriptBuilder()
         
+        self.doc_filter = {
+            "type": {
+                # $nin means "Not In"
+                "$nin": ["paper", "source_code", "internal_code"]
+            }
+        }
+
         # Set up retriever and RAG chain for Q&A
-        self.retriever = load_retriever(k=5)
+        self.retriever = load_retriever(k=5, search_filter=self.doc_filter)      
         
-        # FIX: Improved RAG prompt for educational, beginner-friendly responses
         rag_prompt = """You are MCDC-Tutor, explaining Monte Carlo particle transport concepts to beginners.
 
 Question: {question}
@@ -49,12 +55,12 @@ Documentation: {context}
 Provide a helpful answer that includes:
 1. A simple code example (if relevant)
 2. Clear explanation of key concepts (assume NO nuclear physics background)
-3. Brief description of required parameters
+3. Brief description of required parameters if applicable
 
 Use friendly, educational tone. Keep it concise but informative.
 
 Answer:"""
-        self.rag_prompt = rag_prompt  # Store for reuse in step-specific chains
+        self.rag_prompt = rag_prompt  
         
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
         
@@ -69,7 +75,7 @@ Answer:"""
 ## 💡 CRITICAL MATERIAL MODE INSTRUCTIONS (CE is now the default)
 
 - **Continuous-Energy (CE)**: **Default mode.** Use this most of the time. It requires calculating the atomic composition and automatically adds a note about the required `MCDC_XSLIB` environment variable.
-- **Multi-Group (MG)**: Use this mode **only for teaching basic concepts** or when the user asks or provides cross-section data (e.g., capture="[1.0]").
+- **Multi-Group (MG)**: Use this mode **for teaching basic concepts** or when the user asks or provides cross-section data (e.g., capture="[1.0]"). It does not contain nuclide data, so it requires explicit capture/scatter/fission parameters. It does not require `MCDC_XSLIB`.
 
 ---
 ## ❓ WHEN TO ASK CLARIFYING QUESTIONS
@@ -79,7 +85,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
  DO ASK: "What enrichment for uranium fuel? PWR uses 3-5%, research reactors up to 20%." (critical safety parameter)
  DO ASK: "Natural uranium (0.72% U-235) or enriched?" (determines if material is fissile)
  DON'T ASK: "What density should I use?" (use standard values from MaterialCalculator)
- DON'T ASK: "What cross-section values?" (CE mode handles this; MG uses sensible defaults if needed)
+ DON'T ASK: "What cross-section values?" (CE mode handles this; MG use sensible defaults if needed)
 
 ---
 ## ⚙️ WORKFLOW FOR EVERY REQUEST
@@ -148,13 +154,20 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
             # Access the underlying vectorstore from our existing retriever
             vectorstore = self.retriever.vectorstore
             
-            # Create a new retriever with step-specific metadata filter
+            step_filter = {
+                "$and": [
+                    self.doc_filter,     
+                    {"section": step}    
+                ]
+            }
+
             return vectorstore.as_retriever(
                 search_kwargs={
                     "k": 5, 
-                    "filter": {"section": step} 
+                    "filter": step_filter 
                 }
             )
+
         except AttributeError:
             print(f"Debug: Could not access vectorstore for step filtering, using general retriever")
             return self.retriever
@@ -214,10 +227,14 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
                 # Expand user query
                 expanded_q = self.expand_query(q, step)
                 
-                answer = step_rag_chain.invoke(expanded_q)
-                print(f"\n🤖 {answer}\n")
+                print(f"\n🤖 ", end="", flush=True)
+                
+                for chunk in step_rag_chain.stream(expanded_q):
+                    print(chunk, end="", flush=True)
+                
+                print("\n")
             except Exception as e:
-                print(f"\nError: {e}\n")
+                print(f"\nError: {e}")
         
         # Check if ready to create
         ready = input(f"\nReady to create your {step}? [Y/n]: ").strip().lower()
@@ -297,7 +314,7 @@ Ask **ONE** clarifying question when a parameter is critical and unknown:
         print(f"CREATE YOUR {step.upper()}")
         print(f"{'='*60}\n")
         
-         consecutive_errors = 0  
+        consecutive_errors = 0  
         max_consecutive_errors = 3 
 
         while True:

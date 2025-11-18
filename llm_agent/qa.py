@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-MCDC Q&A Agent - RAG-based system for in-depth technical questions.
-
-Handles queries about:
-- Simulator architecture and internals
-- Physics theory and methods
-- Source code implementation details
-- Usage patterns and examples
-
-Uses intelligent metadata filtering to retrieve relevant document types.
-"""
-
 import os
 import sys
 from pathlib import Path
@@ -26,10 +13,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_google_genai import ChatGoogleGenerativeAI
 from utils import load_llm, load_retriever
 
-# ── CONFIGURATION ──
 DB_PATH = "llm_agent/vectorstore"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-RETRIEVAL_K = 5  # Retrieve top 5 documents
+RETRIEVAL_K = 5 
 
 # ── COLORS FOR CLI ──
 class Colors:

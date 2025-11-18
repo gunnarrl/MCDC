@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 # ── CONFIGURATION ──
 CORPUS_ROOT = Path("llm_agent/corpus")
 OUTPUT_DIR = Path("llm_agent/scraped_docs")
-INDEX_DIR = Path("llm_agent/vectorstore")
+INDEX_DIR = Path("llm_agent/vectorstore2")
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Document paths
