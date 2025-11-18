@@ -202,6 +202,10 @@ class SetSettingsArgs(BaseModel):
 class SearchDocsArgs(BaseModel):
     query: str = Field(..., description="Search query for MCDC documentation")
 
+class DeleteEntityArgs(BaseModel):
+    entity_type: str = Field(..., description="Type: 'material', 'surface', 'cell', 'source', 'tally'")
+    name: str = Field(..., description="The variable name to delete, e.g., 'm1'")
+
 
 
 # TOOL FACTORY 
@@ -574,6 +578,17 @@ CURRENT SCRIPT:
 DEFINED ENTITIES:
 {json.dumps(summary, indent=2)}
 """
+    @tool(args_schema=DeleteEntityArgs)
+    def delete_entity(entity_type: str, name: str) -> str:
+        """
+        Delete an existing entity from the script. 
+        Use this to remove mistakes or before re-creating a modified version.
+        """
+        success = builder.delete_entity(entity_type, name)
+        if success:
+            return f"Deleted {entity_type} '{name}'."
+        else:
+            return f"ERROR: Could not find {entity_type} '{name}' to delete."
     
     # Return all tools as a list
     return [
@@ -587,5 +602,6 @@ DEFINED ENTITIES:
         create_tally_surface,
         set_settings,
         get_current_script,
-        search_docs
+        search_docs,
+        delete_entity
     ]

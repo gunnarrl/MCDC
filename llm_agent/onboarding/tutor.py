@@ -84,6 +84,13 @@ Answer:"""
             system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
 
 ---
+### PROTOCOL FOR MODIFICATIONS
+If the user asks to "delete", "change", "update", or "fix" an existing entity:
+1.  Call `delete_entity(type, name)` to remove the old version.
+2.  If changing an entity, confirm the new entity with the user.
+3.  Call the appropriate `create_` tool to define the new entity.
+4.  Explain that you updated it.
+
 ## CRITICAL MATERIAL MODE INSTRUCTIONS (MG is DEFAULT)
 
 **Multi-Group (MG) is the DEFAULT mode.** Continuous-Energy (CE) should ONLY be used if the user explicitly asks for "continuous energy" or "CE".
@@ -318,18 +325,24 @@ When the user asks to create a material:
 
         while True:
             # Get user's goal
-            prompt_text = f"Describe the {step} you want to create"
+            prompt_text = f"Describe the {step} you want to create (or type 'undo' to go back)"
             if step == "surface":
                 prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
             elif step == "material":
                 prompt_text += " (e.g., 'water', 'UO2 fuel')"
             
-            goal = self.input_func(f"{Colors.BOLD}{prompt_text}...").strip()   
+            goal = self.input_func(f"{Colors.BOLD}{prompt_text} (or press Enter to finish): {Colors.ENDC}").strip()   
 
             if not goal:
                 print(f"{Colors.GREEN}Finished defining {step}s.{Colors.ENDC}")
                 break
             
+            if goal.lower() == "undo":
+                result = self.builder.undo_last()
+                print(f"{Colors.YELLOW}{result}{Colors.ENDC}")
+                print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
+                continue
+
             print(f"\nGenerating {step}...\n")
             
             # FIX 1: Initialize conversation history so Agent remembers proposals
