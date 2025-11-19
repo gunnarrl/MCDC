@@ -1,14 +1,9 @@
+# script is supposed to automatically run the slab_absorbium test
+
 import time
 from llm_agent.utils import load_llm
 from llm_agent.onboarding.tutor import MCDCTutor, Colors
 
-# The script of inputs to feed the agent
-# Format matches the Tutor flow:
-# 1. Ask Question -> "" (Enter to skip)
-# 2. Ready? -> "y"
-# 3. Describe item -> "The prompt"
-# 4. Clarification/Confirmation -> "Yes" (To accept MG proposal)
-# 5. Describe next item OR "" (Enter to finish step)
 INPUT_SCRIPT = [
     # --- MATERIAL STEP ---
     "", "y", 
@@ -27,7 +22,7 @@ INPUT_SCRIPT = [
 
     # --- CELL STEP ---
     "", "y",
-    "Create cell filled with m2 region +s1 & -s2", # No proposal for cells, so no "Yes" needed
+    "Create cell filled with m2 region +s1 & -s2",
     "Create cell filled with m3 region +s2 & -s3",
     "Create cell filled with m1 region +s3 & -s4",
     "", # Finish Step
@@ -48,7 +43,7 @@ INPUT_SCRIPT = [
     "Set N_particle=100 and N_batch=2",
     "", # Finish Step
 
-    # --- SAVE? ---
+    # save
     "y", 
     "automated_slab.py"
 ]
@@ -63,11 +58,11 @@ class AutoInput:
         print(prompt, end="")
         try:
             response = next(self.script)
-            time.sleep(1.5) # Small delay to make it look like typing
+            time.sleep(1.5)
             print(f"{Colors.CYAN}{response}{Colors.ENDC}")
             return response
         except StopIteration:
-            return "n" # Default exit
+            return "n"
 
 if __name__ == "__main__":
     try:

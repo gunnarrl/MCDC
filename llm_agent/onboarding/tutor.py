@@ -114,6 +114,17 @@ When the user asks to create a material:
 1.  If the user explicitly asks for CE, you must calculate atomic composition.
 2.  Remind them that `MCDC_XSLIB` is required.
 
+### PROTOCOL FOR COMPOSITE SHAPES (Requires Confirmation)
+If the user requests a shape that requires defining multiple entities (e.g., a "finite cylinder" needing 1 cylinder + 2 planes, or a "box" needing 6 planes):
+
+1.  **PROPOSE**: Do NOT call tools yet. Instead, explicitly list the plan:
+    * "To create this finite cylinder, I propose creating:
+        1. CylinderZ (radius=...) named '...'
+        2. PlaneZ (z=...) named '...'
+        3. PlaneZ (z=...) named '...'"
+2.  **CONFIRM**: Ask: "Does this plan look correct?"
+3.  **EXECUTE**: Only after the user confirms, call all necessary tools in a single turn.
+
 ---
 ## WORKFLOW FOR EVERY REQUEST
 
@@ -226,7 +237,7 @@ When the user asks to create a material:
         )
         
         while True:
-            q = self.input_func(f"\n{Colors.BOLD}Ask a question...").strip()
+            q = self.input_func(f"\n{Colors.BOLD}Ask a question (press enter to continue): ").strip()
             if not q:
                 break
             
@@ -325,7 +336,7 @@ When the user asks to create a material:
 
         while True:
             # Get user's goal
-            prompt_text = f"Describe the {step} you want to create (or type 'undo' to go back)"
+            prompt_text = f"Describe the {step} you want to create, type 'undo' to go back"
             if step == "surface":
                 prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
             elif step == "material":
@@ -345,7 +356,9 @@ When the user asks to create a material:
 
             print(f"\nGenerating {step}...\n")
             
-            # FIX 1: Initialize conversation history so Agent remembers proposals
+            # track how many entities exist before the attempt
+            start_count = len(self.builder.defined[step])
+
             messages = [
                 {"role": "user", "content": f"Create a {step} based on this description: {goal}"}
             ]
@@ -354,24 +367,20 @@ When the user asks to create a material:
             
             for attempt in range(max_attempts):
                 try:
-                    # Pass full message history
                     response = self.agent.invoke({"messages": messages})
-                    
                     output = self._parse_agent_response(response)
                     
-                    # FIX 2: Check for SUCCESS first to ignore keywords in the final summary
-                    # If the agent says "I have created" or "Defined material", stop.
-                    if "created" in output.lower() or "defined" in output.lower():
+                    # check how many entities exist AFTER the attempt
+                    current_count = len(self.builder.defined[step])
+                    if current_count > start_count:
                         print(f"\n{Colors.GREEN}" + "="*60)
                         print("AGENT RESPONSE:")
                         print("="*60)
                         print(output)
                         print("="*60 + f"{Colors.ENDC}\n")
-                        success = True
                         consecutive_errors = 0
-                        break
+                        break 
 
-                    # FIX 3: Refined clarification phrases (removed 'capture=' to be safer)
                     clarification_phrases = [
                         "should that be", "what", "which", "natural or enriched",
                         "light water or heavy water", "h2o or d2o", "enrichment",
@@ -380,35 +389,26 @@ When the user asks to create a material:
                         "would you like", "do you want", "can you confirm",
                         "how about", "already exists", "already defined", 
                         "different name", "unable to", "cannot create", 
-                        "please specify", "please provide", "?"
+                        "please specify", "please provide", "?",
+                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
                     
+                    print(f"\n{Colors.CYAN}AGENT MESSAGE:")
+                    print("="*60)
+                    print(output)
+                    print("="*60 + f"{Colors.ENDC}\n")
+                    
                     if any(phrase in output.lower() for phrase in clarification_phrases):
-                        print(f"\n{Colors.CYAN}AGENT MESSAGE:")
-                        print("="*60)
-                        print(output)
-                        print("="*60 + f"{Colors.ENDC}\n")
-                        
                         clarification = self.input_func(f"{Colors.BOLD}Your answer: {Colors.ENDC}").strip()
                         if not clarification:
                             print("No clarification provided. Skipping...")
                             break
                         
-                        # FIX 4: Append to history instead of overwriting context
                         messages.append({"role": "assistant", "content": output})
                         messages.append({"role": "user", "content": clarification})
                         continue 
-                    
-                    # Fallback success print if no triggers matched
-                    print(f"\n{Colors.GREEN}" + "="*60)
-                    print("AGENT RESPONSE:")
-                    print("="*60)
-                    print(output)
-                    print("="*60 + f"{Colors.ENDC}\n")
-
-                    success = True
-                    consecutive_errors = 0 
-                    break
+                    else:
+                        break
                     
                 except Exception as e:
                     consecutive_errors += 1
@@ -419,7 +419,6 @@ When the user asks to create a material:
                         print(f"\n{Colors.RED}Multiple errors. Skipping step.{Colors.ENDC}\n")
                         break
 
-            # Show script state
             print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
             
         print("\n" + "="*60)
@@ -451,11 +450,7 @@ When the user asks to create a material:
         ]
         
         for step, description in steps:
-            print(f"\n{Colors.HEADER}{'#'*60}")
-            print(f"# Step: {description}")
-            print(f"{'#'*60}{Colors.ENDC}")
             
-            # Teach concept and check if user wants to create
             if self.teach_concept(step):
                 self.create_step(step)
             else:
