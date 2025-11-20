@@ -317,9 +317,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
            - universes (list): 2D/3D list of Universe objects.
            
         4. type_='mesh' (or 'mesh_structured' / 'mesh_uniform'):
-           - x, y, z (tuple/array): 
-             For Uniform: Use list of 3 floats [start, end, N].
-             For Structured: Use string "np.linspace(...)" or list of grid points.
+           - x, y, z (tuple OR array): 
+             For Uniform (MeshUniform): Must be a list of 3 values [start, end, N_intervals].
+               -> Code will convert to tuple: (start, end, N)
+             For Structured (MeshStructured): Must be a numpy array of grid points.
+               -> Use string "np.linspace(start, end, N+1)" for N intervals.
         """
         if builder.has_entity(type_, name): return f"ERROR: {type_} '{name}' already defined."
         
@@ -329,22 +331,18 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             
             # Detect Mesh Type
             is_mesh = "mesh" in type_.lower()
-            # Allow explicit override via type name (e.g. "mesh_structured")
             force_structured = "structured" in type_.lower()
             
             for k, v in p.items():
                 val = str(v)
                 
-                # --- MESH HANDLING ---
+                # mesh handling: convert lists to np.array or tuples
                 if is_mesh and (k in ['x', 'y', 'z', 't']):
-                    # Case A: User provided a numpy string (e.g. "np.linspace(0,10,5)")
+                    # User provided a numpy string (e.g. "np.linspace(0,10,5)")
                     if "np." in val or "numpy" in val:
                         force_structured = True
-                        # val is already the correct string
                         
-                    # Case B: User provided a list
                     elif isinstance(v, list):
-                        # If explicit structured requested OR list length is not 3
                         # (Uniform meshes MUST be length 3: start, stop, N)
                         if force_structured or len(v) != 3:
                             force_structured = True
@@ -353,11 +351,10 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                             # It is a uniform mesh tuple (0.0, 10.0, 5)
                             val = f"({v[0]}, {v[1]}, {v[2]})"
 
-                # Convert lists to numpy arrays for specific non-mesh fields
+                # Convert lists to numpy arrays
                 elif isinstance(v, list) and k not in ['fill', 'region', 'cells', 'universes']: 
                      val = f"np.array({v})"
                 
-                # Clean up reference lists (remove quotes around variable names)
                 if k in ['cells', 'universes'] and isinstance(v, list):
                     val = str(v).replace("'", "").replace('"', "")
 
@@ -368,7 +365,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 "cell": "Cell", 
                 "universe": "Universe", 
                 "lattice": "Lattice", 
-                "mesh": "MeshUniform" # Default
+                "mesh": "MeshUniform"
             }
             
             # Clean type_ to basic key for map lookup
@@ -419,7 +416,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
     def create_tally(type_: str, name: str, params: str, description: Optional[str] = None) -> str:
         """Create a tally.
         
-        VALID TYPES and REQUIRED PARAMS:
+        VALID TYPES and PARAMS:
         - global: params={'scores': ['flux', ...]}
         - surface: params={'scores': [...], 'surface': 'surface_name'}
         - cell: params={'scores': [...], 'cell': 'cell_name'}
@@ -427,7 +424,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         
         Common Params:
         - scores (list): ['flux', 'absorption', 'fission', 'net-current', ...]
-        - mu, energy, time (array/string): e.g., "np.linspace(0,1,10)" OR [0.0, 1.0, 2.0]
+        - mu (array): Cosine bins (e.g., np.linspace(-1, 1, 33)).
+        - azi (array): Azimuthal angle bins.
+        - polar_reference (array): Polar reference vector.
+        - energy (array): Energy bins (e.g., np.logspace(-5, 7, 10)).
+        - time (array): Time bins (e.g., np.linspace(0, 10, 101)).
         """
         if builder.has_entity("tally", name): return f"ERROR: Tally '{name}' already defined."
         
@@ -437,12 +438,10 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             for k, v in p.items():
                 val = str(v)
                 
-                # Handle numeric arrays (time, energy, mu)
                 # If it's a list, wrap in np.array. If it's a string (np.linspace), leave it.
                 if k in ['time', 'energy', 'mu'] and isinstance(v, list):
                     val = f"np.array({v})"
                 
-                # Handle variable references (mesh, surface, cell)
                 args.append(f"{k}={val}")
                 
             class_map = {
