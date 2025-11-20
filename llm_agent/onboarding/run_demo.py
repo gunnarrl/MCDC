@@ -6,40 +6,33 @@ from llm_agent.onboarding.tutor import MCDCTutor, Colors
 
 INPUT_SCRIPT = [
     # --- MATERIAL STEP ---
-    "", "y", 
-    "Create MG material m1 with capture=[1.0]", "Yes",
-    "Create MG material m2 with capture=[1.5]", "Yes", 
-    "Create MG material m3 with capture=[2.0]", "Yes",
+    "", "Y", 
+    "Create 3 materials named m1, m2, and m3 that have capture = 1, 1.5, 2",
     "", # Finish Step
 
     # --- SURFACE STEP ---
-    "", "y",
-    "Create PlaneZ at z=0.0 named s1 boundary vacuum", "Yes",
-    "Create PlaneZ at z=2.0 named s2", "Yes",
-    "Create PlaneZ at z=4.0 named s3", "Yes",
-    "Create PlaneZ at z=6.0 named s4 boundary vacuum", "Yes",
+    "", "Y",
+    "create 4 surfaces named s1-4 that are planes with z=0, 2, 4, 6. The first and last surfaces should be vacuums",
     "", # Finish Step
 
     # --- CELL STEP ---
-    "", "y",
-    "Create cell filled with m2 region +s1 & -s2",
-    "Create cell filled with m3 region +s2 & -s3",
-    "Create cell filled with m1 region +s3 & -s4",
+    "", "Y",
+    "fill the area between s1 and s2 with m2, between s2 and s3 with m3, and between s3 and s4 with m1",
     "", # Finish Step
 
     # --- SOURCE STEP ---
-    "", "y",
-    "Create isotropic source from z=0.0 to 6.0 energy_group=0", 
+    "", "Y",
+    "create the source between z = 0-6.0, it should be isotropic and energy group 0", 
     "", # Finish Step
 
     # --- TALLY STEP ---
-    "", "y",
-    "Create TallySurface on s4 scores net-current",
-    "Create MeshStructured from z=0.0 to 6.0 with 61 points, scores flux and collision",
+    "", "Y",
+    "create a tally surface on s4 that tracks the flow of particles over that surface",
+    "create a mesh tally that uses a structured mesh from z=0-6 with 60 points. It should track flux and particle collisions, track their direction using 32 bins",
     "", # Finish Step
 
     # --- SETTINGS STEP ---
-    "", "y",
+    "", "Y",
     "Set N_particle=100 and N_batch=2",
     "", # Finish Step
 
@@ -66,7 +59,7 @@ class AutoInput:
 
 if __name__ == "__main__":
     try:
-        llm = load_llm(temperature=0.0)
+        llm = load_llm(temperature=0.1)
         
         # Initialize AutoInput with our script
         auto_input = AutoInput(INPUT_SCRIPT)

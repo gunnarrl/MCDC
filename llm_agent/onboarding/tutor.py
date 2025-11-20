@@ -86,60 +86,54 @@ Answer:"""
 ---
 ### PROTOCOL FOR MODIFICATIONS
 If the user asks to "delete", "change", "update", or "fix" an existing entity:
-1.  Call `delete_entity(type, name)` to remove the old version.
-2.  If changing an entity, confirm the new entity with the user.
-3.  Call the appropriate `create_` tool to define the new entity.
-4.  Explain that you updated it.
-
-## CRITICAL MATERIAL MODE INSTRUCTIONS (MG is DEFAULT)
-
-**Multi-Group (MG) is the DEFAULT mode.** Continuous-Energy (CE) should ONLY be used if the user explicitly asks for "continuous energy" or "CE".
-
-### PROTOCOL FOR CREATING MATERIALS (MG MODE)
-When the user asks to create a material:
-
-1.  **ANALYZE**: Did the user explicitly provide cross-section values (e.g., "capture=[1.0]")?
-    * **YES (Explicit)**: Use **ONLY** the provided parameters. Do **NOT** add unrequested physics (e.g., if User says "capture=[1.0]", do NOT add Scatter).
-    * **NO (Abstract)**: If the user only gives a name (e.g., "create water"), estimate reasonable physics values (Capture + Scatter).
-
-2.  **PROPOSE**: Display the values you intend to use **BEFORE** calling any tools.
-    * *Explicit Case*: "You specified Capture=[1.0]. I will create the material with just that. Does this look correct?"
-    * *Abstract Case*: "For Water, I suggest Capture=[0.01], Scatter=[0.8]. Does this look correct?"
-
-3.  **CONFIRM/EDIT**: Wait for the user to say "Yes" or provide different numbers.
-
-4.  **EXECUTE**: Once confirmed, call `create_material_from_formula` using `mode="MG"` and the agreed-upon arrays.
-
-### PROTOCOL FOR CE MODE (Only if requested)
-1.  If the user explicitly asks for CE, you must calculate atomic composition.
-2.  Remind them that `MCDC_XSLIB` is required.
+1.  Call `manage_script(action='delete', ...)` to remove the old version.
+2.  If changing an entity, confirm the new plan with the user.
+3.  Call the appropriate creation tool to define the new entity.
 
 ### PROTOCOL FOR COMPOSITE SHAPES (Requires Confirmation)
 If the user requests a shape that requires defining multiple entities (e.g., a "finite cylinder" needing 1 cylinder + 2 planes, or a "box" needing 6 planes):
+1.  **PROPOSE**: Explicitly list the plan (e.g., "I propose creating 1 CylinderZ and 2 PlaneZ surfaces...").
+2.  **CONFIRM**: Ask "Does this plan look correct?"
+3.  **EXECUTE**: Only after confirmation, call the tools. 
+    * **IMPORTANT:** Use the `description` parameter on the FIRST surface to label the group (e.g., `description='Start of Finite Cylinder'`).
 
-1.  **PROPOSE**: Do NOT call tools yet. Instead, explicitly list the plan:
-    * "To create this finite cylinder, I propose creating:
-        1. CylinderZ (radius=...) named '...'
-        2. PlaneZ (z=...) named '...'
-        3. PlaneZ (z=...) named '...'"
-2.  **CONFIRM**: Ask: "Does this plan look correct?"
-3.  **EXECUTE**: Only after the user confirms, call all necessary tools in a single turn.
+---
+### TOOL USAGE GUIDELINES
+
+IMPORTANT: Always read the docstring for each tool before using it to understand parameters and expected input formats.
+If the user provides ambiguous input, ask for clarification before calling the tool. If the user gives a complex request, create a plan and confirm it with the user before execution.
+
+**1. Creating Materials (`create_material`)**
+* **Mode 'MG' (Multi-Group):** [DEFAULT] Use for explicit cross-sections. 
+    * Pass arrays as lists in `properties`: `{"capture": [0.1], "scatter": [[0.9]]}`.
+* **Mode 'CE' (Continuous Energy):** [Use only if user explicitly asks] Use for specific isotopes.
+    * Pass dictionary in `properties`: `{"nuclide_composition": {"U235": 0.7}}`.
+* **Mode 'formula':** [Use if user asks for CE and provides a compound material like water, stainless steel, etc.] Use for chemical formulas (e.g., "H2O", "UO2").
+    * Pass details in `properties`: `{"formula": "H2O", "density": 1.0}`.
+
+**2. Creating Geometry (`create_surface`, `create_geometry`)**
+* Use `create_surface` for Planes, Cylinders, Spheres.
+* Use `create_geometry` for **Cells**, **Universes**, **Lattices**, or **Meshes**.
+    * For Cells: `type_='cell', params='{"region": "+s1 & -s2", "fill": "fuel"}'`.
+
+**IMPORTANT 'np.linspace' rule**: you must use **N+1 points** for **N intervals**
+    * INCORRECT: `np.linspace(0, 6, 60)` (Creates 59 intervals)
+    * CORRECT:   `np.linspace(0, 6, 61)` (Creates 60 intervals)
+    
+**3. Creating Tallies (`create_tally`)**
+* Use `type_='mesh'` for TallyMesh (requires a mesh to be defined first).
+* Use `type_='surface'` for TallySurface.
+
+**4. Settings (`set_settings`)**
+* Pass all settings in a single JSON object: `params='{"N_particle": 1000, "k_eff": true}'`.
 
 ---
 ## WORKFLOW FOR EVERY REQUEST
-
-1.  **Check Status:** Call `get_current_script()` to check what entities already exist.
-2.  **Search Docs (If Needed):** If the user asks "how to do X", use `search_docs(query)` before trying to call other tools.
-3.  **Clarify:** If the request is ambiguous (e.g., "boundary condition"), ask a clarifying question.
+1.  **Check Status:** Call `manage_script(action='get')`.
+2.  **Search Docs:** If the user asks "how to", search first.
+3.  **Clarify/Propose:** If ambiguous, ask.
 4.  **Tool Call:** Call the appropriate tool.
-5.  **Explain:** Explain what you created and why.
-
----
-## TOOL PARAMETER FORMAT
-
--   All array parameters **MUST be strings**: e.g., `capture="[1.0]"` NOT `capture=[1.0]`.
--   2D arrays: e.g., `scatter="[[0.8, 0.1], [0.05, 0.85]]"`.
--   Surfaces params: e.g., `params="x=0.0"` or `params="center=[0.0, 0.0], radius=1.5"`.
+5.  **Explain:** Briefly explain what you created.
 """
         
             self.agent = create_agent(
@@ -148,7 +142,7 @@ If the user requests a shape that requires defining multiple entities (e.g., a "
                 system_prompt=system_prompt 
             )
         except Exception as e:
-            print(f"{Colors.FAIL}Warning: Failed to initialize agent properly: {e}{Colors.ENDC}")
+            print(f"{Colors.RED}Warning: Failed to initialize agent properly: {e}{Colors.ENDC}")
             print("Tutor may not function correctly. Check API keys and dependencies.")
             raise
     
@@ -252,7 +246,7 @@ If the user requests a shape that requires defining multiple entities (e.g., a "
                 
                 print(f"{Colors.ENDC}\n")
             except Exception as e:
-                print(f"\n{Colors.FAIL}Error: {e}{Colors.ENDC}")
+                print(f"\n{Colors.RED}Error: {e}{Colors.ENDC}")
         
         # Check if ready to create
         ready = input(f"\nReady to create your {step}? [Y/n]: ").strip().lower()
@@ -412,7 +406,7 @@ If the user requests a shape that requires defining multiple entities (e.g., a "
                     
                 except Exception as e:
                     consecutive_errors += 1
-                    print(f"\n{Colors.FAIL}An unexpected error occurred.")
+                    print(f"\n{Colors.RED}An unexpected error occurred.")
                     print(f"   Error details: {type(e).__name__}: {str(e)}{Colors.ENDC}")
                     
                     if consecutive_errors >= max_consecutive_errors:
@@ -481,7 +475,7 @@ If the user requests a shape that requires defining multiple entities (e.g., a "
                 print(f"\n{Colors.GREEN}Saved to {filename}{Colors.ENDC}")
                 print(f"\nTo run: python {filename}")
             except Exception as e:
-                print(f"\n{Colors.FAIL}Error saving file: {e}{Colors.ENDC}")
+                print(f"\n{Colors.RED}Error saving file: {e}{Colors.ENDC}")
         
         print(f"\n{Colors.CYAN}Thanks for using MCDC Tutor!{Colors.ENDC}\n")
 

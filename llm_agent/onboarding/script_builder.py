@@ -10,10 +10,14 @@ class ScriptBuilder:
         # Store entries as dictionaries to enable targeted deletion
         # Format: {'code': str, 'type': str, 'name': str}
         self.entries: List[Dict[str, str]] = []
+        
         self.defined: Dict[str, Set[str]] = {
             "material": set(),
             "surface": set(),
             "cell": set(),
+            "universe": set(),
+            "lattice": set(),
+            "mesh": set(),
             "source": set(),
             "tally": set(),
             "settings": set()
@@ -26,6 +30,11 @@ class ScriptBuilder:
             'type': entity_type, 
             'name': name
         })
+        
+        # Auto-create key if it doesn't exist to prevent KeyErrors
+        if entity_type not in self.defined:
+            self.defined[entity_type] = set()
+            
         self.defined[entity_type].add(name)
     
     def get_script(self) -> str:
@@ -45,7 +54,10 @@ class ScriptBuilder:
             return "Nothing to undo."
         
         last_entry = self.entries.pop()
-        self.defined[last_entry['type']].discard(last_entry['name'])
+        # Use discard to avoid errors if key missing
+        if last_entry['type'] in self.defined:
+            self.defined[last_entry['type']].discard(last_entry['name'])
+            
         return f"Undid creation of {last_entry['type']} '{last_entry['name']}'."
 
     def delete_entity(self, entity_type: str, name: str) -> bool:
@@ -61,7 +73,8 @@ class ScriptBuilder:
         ]
         
         if len(self.entries) < initial_count:
-            self.defined[entity_type].discard(name)
+            if entity_type in self.defined:
+                self.defined[entity_type].discard(name)
             return True
         return False
 
