@@ -77,6 +77,13 @@ class ScriptBuilder:
                 self.defined[entity_type].discard(name)
             return True
         return False
+    
+    def get_code_by_type(self, entity_type: str) -> str:
+        """Get the code for all entities of a specific type."""
+        lines = [e['code'] for e in self.entries if e['type'] == entity_type]
+        if not lines:
+            return "No entries defined."
+        return "\n".join(lines)
 
     def reset(self):
         self.__init__()

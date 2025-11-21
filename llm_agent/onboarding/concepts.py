@@ -54,7 +54,29 @@ CONCEPT_LESSONS = {
             "Can a cell contain multiple materials?"
         ]
     },
-    
+
+    "hierarchy": {
+        "concept": (
+            "Hierarchies allow you to build complex, repeating structures without redefining geometry "
+            "thousands of times. Think of a 'Universe' as a container or a blueprint that groups cells together. "
+            "You can then place that Universe inside another Cell using the 'fill' parameter. "
+            "Lattices take this further by creating a grid where each voxel is filled by a specific Universe."
+        ),
+        "parts": (
+            "1. Universe: A named collection of cells. It has no boundaries itself; it extends infinitely "
+            "until 'clipped' by the cell that contains it.\n"
+            "2. Lattice: A structured grid (like a checkerboard). You define the grid lines (x, y, z) "
+            "and map each grid element (i, j, k) to a specific Universe.\n"
+            "3. Fill: The link between levels. A Cell in the main world can be 'filled' with a "
+            "Universe or Lattice instead of a Material."
+        ),
+        "key_questions": [
+            "How do I put a Universe inside a Cell? (Use the 'fill' parameter in create_cell)",
+            "What is the 'root' universe? (The top-level universe where particles start)",
+            "What are the steps to create a lattice? (Define grid lines, create universes, map them to the lattice)"
+        ]
+    },
+
     "source": {
         "concept": (
             "A *source* defines where, when, and with what energy particles are born. "

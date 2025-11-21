@@ -29,14 +29,12 @@ class MCDCTutor:
     5. Validates and tracks state (using ScriptBuilder)
     """
     
-    # ─────────────────────────────────────────────────────────────────────────────
-    # PHASE 3: Step-specific keywords for query expansion
-    # Maps each workflow step to relevant technical terms that improve retrieval
-    # ─────────────────────────────────────────────────────────────────────────────
+    # Step-specific keywords for query expansion
     STEP_KEYWORDS = {
         "material": "MaterialMG Material capture scatter fission nuclide_composition density multi-group continuous-energy cross-section macroscopic",
         "surface": "Surface PlaneX PlaneY PlaneZ CylinderX CylinderY CylinderZ Sphere boundary_condition vacuum reflective interface geometry normal",
-        "cell": "Cell region fill boolean operators intersection union & | translation rotation universe lattice root_universe",
+        "cell": "Cell region fill boolean operators intersection union & |",
+        "hierarchy": "Universe Lattice fill translation rotation repetition grid 3D array hexagonal square", # can be commented out to remove
         "source": "Source position energy direction isotropic white_direction time energy_group spectrum point_source volume_source uniform",
         "tally": "TallyMesh TallyCell TallySurface scores flux collision fission net-current mesh energy_bins detector mu_bins",
         "settings": "settings N_particle N_batch eigenmode census output population_control variance_reduction convergence active inactive",
@@ -122,6 +120,7 @@ If the user provides ambiguous input, ask for clarification before calling the t
     
 **3. Creating Tallies (`create_tally`)**
 * Use `type_='mesh'` for TallyMesh (requires a mesh to be defined first).
+    - DO NOT use np.linspace for a uniform mesh, just a tuple of 3 values (start, end, N).
 * Use `type_='surface'` for TallySurface.
 
 **4. Settings (`set_settings`)**
@@ -316,65 +315,38 @@ If the user provides ambiguous input, ask for clarification before calling the t
         # Fallback for all other types
         return str(content)
 
-    def create_step(self, step: str) -> str:
-        """
-        Use agent to help user create their version of this step.
-        Supports clarification loops with memory.
-        """
-        print(f"\n{Colors.HEADER}{'='*60}")
-        print(f"CREATE YOUR {step.upper()}")
-        print(f"{'='*60}{Colors.ENDC}\n")
-        
-        consecutive_errors = 0  
-        max_consecutive_errors = 3 
+    def _print_script(self):
+        """Helper to print the script in a distinct color."""
+        print(f"\n{Colors.HEADER}--- CURRENT SCRIPT ---{Colors.ENDC}")
+        # Using CYAN for the script content as requested
+        print(f"{Colors.CYAN}{self.builder.get_script()}{Colors.ENDC}")
+        print(f"{Colors.HEADER}----------------------{Colors.ENDC}\n")
 
+    # Add this interactive view logic inside MCDCTutor
+    def _handle_view_mode(self):
+        """Allow user to view script and make general edits."""
         while True:
-            # Get user's goal
-            prompt_text = f"Describe the {step} you want to create, type 'undo' to go back"
-            if step == "surface":
-                prompt_text += " (e.g., 'sphere at origin radius 5', 'plane at x=10')"
-            elif step == "material":
-                prompt_text += " (e.g., 'water', 'UO2 fuel')"
+            self._print_script()
+            print(f"{Colors.BOLD}View Mode:{Colors.ENDC} Press {Colors.GREEN}Enter{Colors.ENDC} to return to flow, or type an instruction to edit the script.")
+            command = self.input_func(f"> ").strip()
             
-            goal = self.input_func(f"{Colors.BOLD}{prompt_text} (or press Enter to finish): {Colors.ENDC}").strip()   
-
-            if not goal:
-                print(f"{Colors.GREEN}Finished defining {step}s.{Colors.ENDC}")
+            if not command:
+                print("Returning to tutorial...")
                 break
+                
+            print(f"\n{Colors.YELLOW}Processing edit...{Colors.ENDC}")
             
-            if goal.lower() == "undo":
-                result = self.builder.undo_last()
-                print(f"{Colors.YELLOW}{result}{Colors.ENDC}")
-                print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
-                continue
-
-            print(f"\nGenerating {step}...\n")
+            # Start a conversation history for this specific edit
+            messages = [{"role": "user", "content": command}]
             
-            # track how many entities exist before the attempt
-            start_count = len(self.builder.defined[step])
-
-            messages = [
-                {"role": "user", "content": f"Create a {step} based on this description: {goal}"}
-            ]
-            
-            max_attempts = 5 
-            
-            for attempt in range(max_attempts):
+            # Inner loop to handle clarifications/confirmations (e.g., "Does this look correct?")
+            while True:
                 try:
                     response = self.agent.invoke({"messages": messages})
                     output = self._parse_agent_response(response)
+                    print(f"\n{Colors.GREEN}Agent:{Colors.ENDC} {output}")
                     
-                    # check how many entities exist AFTER the attempt
-                    current_count = len(self.builder.defined[step])
-                    if current_count > start_count:
-                        print(f"\n{Colors.GREEN}" + "="*60)
-                        print("AGENT RESPONSE:")
-                        print("="*60)
-                        print(output)
-                        print("="*60 + f"{Colors.ENDC}\n")
-                        consecutive_errors = 0
-                        break 
-
+                    # Re-use the clarification detection from create_step
                     clarification_phrases = [
                         "should that be", "what", "which", "natural or enriched",
                         "light water or heavy water", "h2o or d2o", "enrichment",
@@ -387,17 +359,124 @@ If the user provides ambiguous input, ask for clarification before calling the t
                         "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
                     
-                    print(f"\n{Colors.CYAN}AGENT MESSAGE:")
-                    print("="*60)
-                    print(output)
-                    print("="*60 + f"{Colors.ENDC}\n")
+                    # If the agent is asking for confirmation, we need to reply
+                    if any(phrase in output.lower() for phrase in clarification_phrases):
+                        user_reply = self.input_func(f"\n{Colors.BOLD}Response (or Enter to cancel): {Colors.ENDC}").strip()
+                        
+                        if not user_reply:
+                            print("Edit cancelled.")
+                            break
+                        
+                        messages.append({"role": "assistant", "content": output})
+                        messages.append({"role": "user", "content": user_reply})
+                        continue # Loop back to let the agent execute the next step
+                    
+                    # If no question asked, the edit is finished
+                    break
+                    
+                except Exception as e:
+                    print(f"{Colors.RED}Error: {e}{Colors.ENDC}")
+                    break
+
+    def create_step(self, step: str) -> str:
+        """
+        Use agent to help user create their version of this step.
+        Supports 'view' command and group summaries.
+        """
+        print(f"\n{Colors.HEADER}{'='*60}")
+        print(f"CREATE YOUR {step.upper()}")
+        print(f"{'='*60}{Colors.ENDC}\n")
+        
+        consecutive_errors = 0  
+        max_consecutive_errors = 3 
+
+        while True:
+            # Enhanced prompt text
+            prompt_text = f"Describe {step}(s) to add, or type 'view' to see script/edit"
+            if step == "surface":
+                prompt_text += " (e.g., 'sphere radius 5')"
+            elif step == "material":
+                prompt_text += " (e.g., 'water')"
+            
+            goal = self.input_func(f"{Colors.BOLD}{prompt_text} (or Enter to finish): {Colors.ENDC}").strip()   
+
+            if not goal:
+                print(f"{Colors.GREEN}Finished defining {step}s.{Colors.ENDC}")
+                break
+            
+            # --- VIEW MODE INTERCEPTION ---
+            if goal.lower() == "view":
+                self._handle_view_mode()
+                continue
+            # ------------------------------
+
+            if goal.lower() == "undo":
+                result = self.builder.undo_last()
+                print(f"{Colors.YELLOW}{result}{Colors.ENDC}")
+                continue
+
+            print(f"\nGenerating {step}...\n")
+            
+            # Track count to detect changes
+            start_count = len(self.builder.defined.get(step, set()))
+
+            current_context = self.builder.get_script()
+            
+            messages = [
+                {
+                    "role": "user", 
+                    "content": (
+                        f"Here is the current MCDC script:\n```python\n{current_context}\n```\n\n"
+                        f"TASK: Create a {step}(s) based on this description: {goal}\n"
+                        f"IMPORTANT: Use existing variable names from the script where appropriate."
+                    )
+                }
+            ]
+            
+            max_attempts = 5 
+            
+            for attempt in range(max_attempts):
+                try:
+                    response = self.agent.invoke({"messages": messages})
+                    output = self._parse_agent_response(response)
+                    
+                    # Check if success
+                    current_count = len(self.builder.defined.get(step, set()))
+                    
+                    if current_count > start_count:
+                        print(f"\n{Colors.GREEN}" + "="*60)
+                        print("SUCCESS")
+                        print("="*60 + f"{Colors.ENDC}")
+                        print(output)
+                        
+                        # --- SHOW ALL ENTITIES OF THIS TYPE ---
+                        print(f"\n{Colors.HEADER}Current {step.upper()} definitions:{Colors.ENDC}")
+                        print(f"{Colors.CYAN}{self.builder.get_code_by_type(step)}{Colors.ENDC}")
+                        print(f"{Colors.GREEN}" + "="*60 + f"{Colors.ENDC}\n")
+                        
+                        consecutive_errors = 0
+                        break 
+
+                    # Clarification Logic
+                    clarification_phrases = [
+                        "should that be", "what", "which", "natural or enriched",
+                        "light water or heavy water", "h2o or d2o", "enrichment",
+                        "boundary condition", "reflective or vacuum",
+                        "i suggest", "i recommend", "does this look correct", 
+                        "would you like", "do you want", "can you confirm",
+                        "how about", "already exists", "already defined", 
+                        "different name", "unable to", "cannot create", 
+                        "please specify", "please provide", "?",
+                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
+                    ]
+                    
+                    print(f"\n{Colors.BLUE}TUTOR:{Colors.ENDC}")
+                    print(output + "\n")
                     
                     if any(phrase in output.lower() for phrase in clarification_phrases):
                         clarification = self.input_func(f"{Colors.BOLD}Your answer: {Colors.ENDC}").strip()
                         if not clarification:
-                            print("No clarification provided. Skipping...")
                             break
-                        
                         messages.append({"role": "assistant", "content": output})
                         messages.append({"role": "user", "content": clarification})
                         continue 
@@ -406,26 +485,17 @@ If the user provides ambiguous input, ask for clarification before calling the t
                     
                 except Exception as e:
                     consecutive_errors += 1
-                    print(f"\n{Colors.RED}An unexpected error occurred.")
-                    print(f"   Error details: {type(e).__name__}: {str(e)}{Colors.ENDC}")
-                    
+                    print(f"\n{Colors.RED}An unexpected error occurred: {e}{Colors.ENDC}")
                     if consecutive_errors >= max_consecutive_errors:
-                        print(f"\n{Colors.RED}Multiple errors. Skipping step.{Colors.ENDC}\n")
                         break
 
-            print(f"{len(self.builder.defined[step])} {step}(s) defined so far.")
-            
-        print("\n" + "="*60)
-        print("CURRENT SCRIPT STATE:")
-        print("="*60)
-        print(self.builder.get_script())
-        print("="*60 + "\n")
-        
+        # Final show of script for this step before moving on
+        self._print_script()
         return self.builder.get_script()
     
     def run_onboarding(self):
         """
-        Full 7-step interactive curriculum.
+        Full 8-step (universes and lattices are optional) interactive curriculum.
         """
         print("\n" + "="*60)
         print(f"{Colors.HEADER}Welcome to MCDC Onboarding!{Colors.ENDC}")
@@ -438,6 +508,7 @@ If the user provides ambiguous input, ask for clarification before calling the t
             ("material", "Materials (what things are made of)"),
             ("surface", "Surfaces (geometric boundaries)"),
             ("cell", "Cells (regions of space)"),
+            ("hierarchy", "Hierarchies (Universes & Lattices) [optional]"), # can be commented out to remove
             ("source", "Source (where particles start)"),
             ("tally", "Tally (what to measure)"),
             ("settings", "Settings (simulation parameters)"),
