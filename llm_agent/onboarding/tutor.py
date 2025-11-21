@@ -6,49 +6,59 @@ from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pathlib import Path
 
-class Colors:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+# UI Imports
+from prompt_toolkit import PromptSession
+from prompt_toolkit.styles import Style as PromptStyle
+from prompt_toolkit.formatted_text import HTML
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.syntax import Syntax
+from rich.panel import Panel
+from rich.theme import Theme
+from rich.status import Status
+from rich.prompt import Confirm
+
+# Define a custom theme for Rich
+custom_theme = Theme({
+    "info": "dim cyan",
+    "warning": "yellow",
+    "error": "bold red",
+    "success": "bold green",
+    "tutor": "bold blue",
+    "user": "bold magenta",
+    "step": "magenta bold reverse",
+    "code": "bold white",
+})
+
+console = Console(theme=custom_theme)
 
 class MCDCTutor:
     """
     Interactive tutor for learning MCDC through a 7-step workflow.
-    
-    Each step:
-    1. Teaches the concept (from hardcoded curriculum)
-    2. Shows relevant examples (from RAG with step filtering)
-    3. Answers questions (using step-specific RAG chain)
-    4. Helps user create their version (using agent + tools)
-    5. Validates and tracks state (using ScriptBuilder)
     """
     
-    # Step-specific keywords for query expansion
     STEP_KEYWORDS = {
         "material": "MaterialMG Material capture scatter fission nuclide_composition density multi-group continuous-energy cross-section macroscopic",
         "surface": "Surface PlaneX PlaneY PlaneZ CylinderX CylinderY CylinderZ Sphere boundary_condition vacuum reflective interface geometry normal",
         "cell": "Cell region fill boolean operators intersection union & |",
-        "hierarchy": "Universe Lattice fill translation rotation repetition grid 3D array hexagonal square", # can be commented out to remove
+        "hierarchy": "Universe Lattice fill translation rotation repetition grid 3D array hexagonal square", 
         "source": "Source position energy direction isotropic white_direction time energy_group spectrum point_source volume_source uniform",
         "tally": "TallyMesh TallyCell TallySurface scores flux collision fission net-current mesh energy_bins detector mu_bins",
         "settings": "settings N_particle N_batch eigenmode census output population_control variance_reduction convergence active inactive",
         "run": "run execute simulate output h5 tally results k-effective convergence statistics batch cycle"
     }
     
-    def __init__(self, llm, input_func=input):
-        # Create our own builder instance
+    def __init__(self, llm):
         self.builder = ScriptBuilder()
-        self.input_func = input_func
         
+        # specific style for the input prompt cursor
+        self.prompt_style = PromptStyle.from_dict({
+            'prompt': '#00aa00 bold',  # Green bold prompt
+        })
+        self.session = PromptSession()
+
         self.doc_filter = {
             "type": {
-                # $nin means "Not In"
                 "$nin": ["paper", "source_code", "internal_code"]
             }
         }
@@ -57,26 +67,19 @@ class MCDCTutor:
         self.retriever = load_retriever(k=5, search_filter=self.doc_filter)      
         
         rag_prompt = """You are MCDC-Tutor, explaining Monte Carlo particle transport concepts to beginners.
-
 Question: {question}
-
 Documentation: {context}
-
 Provide a helpful answer that includes:
 1. A simple code example (if relevant)
 2. Clear explanation of key concepts (assume NO nuclear physics background)
 3. Brief description of required parameters if applicable
-
 Use friendly, educational tone. Keep it concise but informative.
-
 Answer:"""
         self.rag_prompt = rag_prompt  
-        
         self.rag_chain = create_rag_chain_with_prompt(llm, self.retriever, rag_prompt)
         
         try:
             self.tools = get_mcdc_tools(self.builder, self.retriever)
-
             self.llm = llm
             
             system_prompt = """You are MCDC-Tutor, an expert assistant for creating Monte Carlo particle transport simulations using the MCDC Python package.
@@ -88,22 +91,15 @@ If the user asks to "delete", "change", "update", or "fix" an existing entity:
 2.  If changing an entity, confirm the new plan with the user.
 3.  Call the appropriate creation tool to define the new entity.
 
-### PROTOCOL FOR COMPOSITE SHAPES (Requires Confirmation)
-If the user requests a shape that requires defining multiple entities (e.g., a "finite cylinder" needing 1 cylinder + 2 planes, or a "box" needing 6 planes):
-1.  **PROPOSE**: Explicitly list the plan (e.g., "I propose creating 1 CylinderZ and 2 PlaneZ surfaces...").
+### PROTOCOL FOR COMPLEX TASKS
+If the user requests a task that requires defining multiple entities (e.g., "finite cylinder" or "box"), or is otherwise complex:
+1.  **PROPOSE**: Explicitly list the plan.
 2.  **CONFIRM**: Ask "Does this plan look correct?"
-3.  **EXECUTE**: Only after confirmation, call the tools. 
-    * **IMPORTANT:** Use the `description` parameter on the FIRST surface to label the group (e.g., `description='Start of Finite Cylinder'`).
+3.  **EXECUTE**: Only after confirmation. Use `description` on the FIRST entity to label the group.
 
----
 ### TOOL USAGE GUIDELINES
-
-IMPORTANT: Always read the docstring for each tool before using it to understand parameters and expected input formats.
-If the user provides ambiguous input, ask for clarification before calling the tool. If the user gives a complex request, create a plan and confirm it with the user before execution.
-
 **1. Creating Materials (`create_material`)**
-* **Mode 'MG' (Multi-Group):** [DEFAULT] Use for explicit cross-sections. 
-    * Pass arrays as lists in `properties`: `{"capture": [0.1], "scatter": [[0.9]]}`.
+* **Mode 'MG' (Multi-Group):** [DEFAULT] Pass arrays as lists: `{"capture": [0.1]}`.
 * **Mode 'CE' (Continuous Energy):** [Use only if user explicitly asks] Use for specific isotopes.
     * Pass dictionary in `properties`: `{"nuclide_composition": {"U235": 0.7}}`.
 * **Mode 'formula':** [Use if user asks for CE and provides a compound material like water, stainless steel, etc.] Use for chemical formulas (e.g., "H2O", "UO2").
@@ -112,24 +108,19 @@ If the user provides ambiguous input, ask for clarification before calling the t
 **2. Creating Geometry (`create_surface`, `create_geometry`)**
 * Use `create_surface` for Planes, Cylinders, Spheres.
 * Use `create_geometry` for **Cells**, **Universes**, **Lattices**, or **Meshes**.
-    * For Cells: `type_='cell', params='{"region": "+s1 & -s2", "fill": "fuel"}'`.
+    * Cell Example: `type_='cell', params='{"region": "+s1 & -s2", "fill": "fuel"}'`.
+* **np.linspace rule**: Use **N+1 points** for **N intervals**.
 
-**IMPORTANT 'np.linspace' rule**: you must use **N+1 points** for **N intervals**
-    * INCORRECT: `np.linspace(0, 6, 60)` (Creates 59 intervals)
-    * CORRECT:   `np.linspace(0, 6, 61)` (Creates 60 intervals)
-    
 **3. Creating Tallies (`create_tally`)**
-* Use `type_='mesh'` for TallyMesh (requires a mesh to be defined first).
-    - DO NOT use np.linspace for a uniform mesh, just a tuple of 3 values (start, end, N).
+* Use `type_='mesh'` for TallyMesh. DO NOT use np.linspace for uniform mesh, just tuple (start, end, N).
 * Use `type_='surface'` for TallySurface.
 
 **4. Settings (`set_settings`)**
-* Pass all settings in a single JSON object: `params='{"N_particle": 1000, "k_eff": true}'`.
+* Pass all settings in a single JSON object.
 
----
-## WORKFLOW FOR EVERY REQUEST
+## WORKFLOW
 1.  **Check Status:** Call `manage_script(action='get')`.
-2.  **Search Docs:** If the user asks "how to", search first.
+2.  **Search Docs:** If "how to", search first.
 3.  **Clarify/Propose:** If ambiguous, ask.
 4.  **Tool Call:** Call the appropriate tool.
 5.  **Explain:** Briefly explain what you created.
@@ -141,136 +132,104 @@ If the user provides ambiguous input, ask for clarification before calling the t
                 system_prompt=system_prompt 
             )
         except Exception as e:
-            print(f"{Colors.RED}Warning: Failed to initialize agent properly: {e}{Colors.ENDC}")
-            print("Tutor may not function correctly. Check API keys and dependencies.")
+            console.print(f"[error]Warning: Failed to initialize agent properly: {e}[/error]")
             raise
     
-    # Query expansion for better retrieval
+    def get_input(self, prompt_text=""):
+        """
+        Unified input handler. Prints the prompt text using Rich, 
+        then gets input using prompt_toolkit.
+        """
+        if prompt_text:
+            console.print(f"[user]{prompt_text}[/user]")
+        
+        # The tuple syntax is (style_class, text)
+        return self.session.prompt([('class:prompt', '> ')], style=self.prompt_style).strip()
+
     def expand_query(self, query: str, step: str) -> str:
-        """
-        Expand query with step-specific keywords for better retrieval.
-        This helps find relevant documents even when user uses non-technical language.
-        """
-        # Start with step-specific context
         base_query = f"{step} {query}"
-        
-        # Append relevant keywords from our keyword mapping
         keywords = self.STEP_KEYWORDS.get(step, "")
-        
         return f"{base_query} {keywords}"
     
-    # Create step-filtered retriever so we only get examples relevant to the current step
     def get_step_retriever(self, step: str):
-        """
-        Create a retriever that filters by workflow step.
-        This is crucial for showing users only relevant examples during each step.
-        """
         try:
-            # Access the underlying vectorstore from our existing retriever
             vectorstore = self.retriever.vectorstore
-            
-            step_filter = {
-                "$and": [
-                    self.doc_filter,     
-                    {"section": step}    
-                ]
-            }
-
-            return vectorstore.as_retriever(
-                search_kwargs={
-                    "k": 5, 
-                    "filter": step_filter 
-                }
-            )
-
+            step_filter = {"$and": [self.doc_filter, {"section": step}]}
+            return vectorstore.as_retriever(search_kwargs={"k": 5, "filter": step_filter})
         except AttributeError:
-            print(f"Debug: Could not access vectorstore for step filtering, using general retriever")
             return self.retriever
     
     def teach_concept(self, step: str) -> bool:
-        """
-        Run the 5-part mini-lesson for a given step.
-        
-        Returns:
-            bool: True if user is ready to create, False if they want to skip
-        """
         lesson = CONCEPT_LESSONS[step]
         
-        print(f"\n{Colors.HEADER}{'='*60}")
-        print(f"STEP: {step.upper()}")
-        print(f"{'='*60}{Colors.ENDC}\n")
-        print(f"{Colors.BOLD}Concept:{Colors.ENDC}\n{lesson['concept']}\n")
-        print(f"{Colors.BOLD}Key parts:{Colors.ENDC}\n{lesson['parts']}\n")
+        console.print("\n")
+        console.rule(f"[step] STEP: {step.upper()} [/step]")
         
-        # Show step-specific examples from RAG
+        # 1. Concept Block
+        console.print(Panel(
+            Markdown(lesson['concept']),
+            title="Concept",
+            border_style="magenta"
+        ))
+        
+        # 2. Key Parts
+        console.print("\n[bold]Key parts:[/bold]")
+        console.print(Markdown(lesson['parts']))
+        
+        # Show step-specific examples
         try:
             step_retriever = self.get_step_retriever(step)
             expanded_query = self.expand_query("beginner simple example", step)
             examples = step_retriever.invoke(expanded_query)
             
             if examples:
-                print(f"\n{Colors.CYAN}Example from regression tests:")
-                print("-" * 60)
-                # Show first 500 chars of first example
-                print(examples[0].page_content[:500])
-                if len(examples[0].page_content) > 500:
-                    print("...")
-                print("-" * 60 + f"{Colors.ENDC}")
+                console.print("\n[dim]Reference Example:[/dim]")
+                snip = Syntax(examples[0].page_content[:500], "python", theme="ansi_dark")
+                console.print(snip)
         except Exception as e:
-            print(f"\n(Could not load example: {e})")
+            console.print(f"\n[dim](Could not load example: {e})[/dim]")
         
-        print(f"\n{Colors.YELLOW}Common questions about {step}:{Colors.ENDC}")
+        console.print(f"\n[warning]Common questions about {step}:[/warning]")
         for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
-            print(f"  {i}. {q}")
+            console.print(f"  {i}. {q}")
         
         step_rag_chain = create_rag_chain_with_prompt(
-            self.llm,
-            self.get_step_retriever(step),
-            self.rag_prompt
+            self.llm, self.get_step_retriever(step), self.rag_prompt
         )
         
         while True:
-            q = self.input_func(f"\n{Colors.BOLD}Ask a question (press enter to continue): ").strip()
+            q = self.get_input("Ask a question (press enter to continue):")
             if not q:
                 break
             
             try:
-                # Expand user query
                 expanded_q = self.expand_query(q, step)
+                console.print(f"\n[tutor]TUTOR:[/tutor] ", end="")
                 
-                print(f"\n{Colors.BLUE}TUTOR: ", end="", flush=True)
+                # Use status spinner for RAG retrieval
+                with console.status("[bold blue]Thinking...", spinner="dots"):
+                    response = ""
+                    for chunk in step_rag_chain.stream(expanded_q):
+                        response += str(chunk)
                 
-                for chunk in step_rag_chain.stream(expanded_q):
-                    print(chunk, end="", flush=True)
-                
-                print(f"{Colors.ENDC}\n")
+                console.print(Markdown(response))
+                console.print("")
+
             except Exception as e:
-                print(f"\n{Colors.RED}Error: {e}{Colors.ENDC}")
+                console.print(f"\n[error]Error: {e}[/error]")
         
-        # Check if ready to create
-        ready = input(f"\nReady to create your {step}? [Y/n]: ").strip().lower()
-        return ready != "n"
+        console.print("")
+        return Confirm.ask(f"[bold]Ready to create your {step}?[/bold]", default=True)
     
     def _parse_agent_response(self, response) -> str:
-        """Handle all response formats: strings, dicts, AIMessage, content blocks."""
-        if isinstance(response, str):
-            return response
-            
+        if isinstance(response, str): return response
         if isinstance(response, dict):
-            if 'output' in response:
-                return response['output']
-            if 'content' in response:
-                return response['content']
+            if 'output' in response: return response['output']
+            if 'content' in response: return response['content']
             if 'messages' in response and response['messages']:
                 return self._extract_message_content(response['messages'][-1])
-                
-        # Handle object with .content attribute (AIMessage)
-        if hasattr(response, 'content'):
-            return response.content
-            
-        # Handle list (e.g., list of messages or content blocks)
+        if hasattr(response, 'content'): return response.content
         if isinstance(response, list):
-            # Try to extract text from blocks or join string representations
             try:
                 text_parts = []
                 for block in response:
@@ -283,200 +242,133 @@ If the user provides ambiguous input, ask for clarification before calling the t
                 return '\n'.join(text_parts)
             except Exception:
                 return str(response)
-
         return str(response)
 
     def _extract_message_content(self, message):
-        """Extract content from LangChain message objects or dicts."""
         content = None
-        if isinstance(message, dict):
-            content = message.get('content', str(message))
-        elif hasattr(message, 'content'):
-            content = message.content
-        else:
-            return str(message)
+        if isinstance(message, dict): content = message.get('content', str(message))
+        elif hasattr(message, 'content'): content = message.content
+        else: return str(message)
 
         if isinstance(content, list):
-            text_parts = []
-            for block in content:
-                if isinstance(block, dict) and block.get('type') == 'text':
-                    text_parts.append(block.get('text', ''))
-                elif isinstance(block, str):
-                    text_parts.append(block)
-                # Failsafe for other unexpected block types
-                else: 
-                    text_parts.append(str(block))
+            text_parts = [b.get('text', '') if isinstance(b, dict) else str(b) for b in content]
             return '\n'.join(text_parts)
-        
-        # Handle simple string content
-        if isinstance(content, str):
-            return content
-        
-        # Fallback for all other types
         return str(content)
 
     def _print_script(self):
-        """Helper to print the script in a distinct color."""
-        print(f"\n{Colors.HEADER}--- CURRENT SCRIPT ---{Colors.ENDC}")
-        # Using CYAN for the script content as requested
-        print(f"{Colors.CYAN}{self.builder.get_script()}{Colors.ENDC}")
-        print(f"{Colors.HEADER}----------------------{Colors.ENDC}\n")
+        console.print("\n")
+        console.rule("[bold cyan]CURRENT SCRIPT[/bold cyan]")
+        script_content = self.builder.get_script()
+        syntax = Syntax(script_content, "python", theme="monokai", line_numbers=True, word_wrap=True)
+        console.print(syntax)
+        console.rule("[bold cyan]END SCRIPT[/bold cyan]")
+        console.print("\n")
 
-    # Add this interactive view logic inside MCDCTutor
     def _handle_view_mode(self):
-        """Allow user to view script and make general edits."""
         while True:
             self._print_script()
-            print(f"{Colors.BOLD}View Mode:{Colors.ENDC} Press {Colors.GREEN}Enter{Colors.ENDC} to return to flow, or type an instruction to edit the script.")
-            command = self.input_func(f"> ").strip()
-            
+            console.print("[bold]View Mode:[/bold] Press [green]Enter[/green] to return to flow, or type an instruction to edit.")
+            command = self.get_input()
+
             if not command:
-                print("Returning to tutorial...")
+                console.print("Returning to tutorial...")
                 break
                 
-            print(f"\n{Colors.YELLOW}Processing edit...{Colors.ENDC}")
-            
-            # Start a conversation history for this specific edit
             messages = [{"role": "user", "content": command}]
             
-            # Inner loop to handle clarifications/confirmations (e.g., "Does this look correct?")
             while True:
                 try:
-                    response = self.agent.invoke({"messages": messages})
-                    output = self._parse_agent_response(response)
-                    print(f"\n{Colors.GREEN}Agent:{Colors.ENDC} {output}")
+                    with console.status("[bold yellow]Processing edit...", spinner="dots"):
+                        response = self.agent.invoke({"messages": messages})
                     
-                    # Re-use the clarification detection from create_step
+                    output = self._parse_agent_response(response)
+                    console.print(Panel(Markdown(output), title="Agent", border_style="green"))
+                    
                     clarification_phrases = [
-                        "should that be", "what", "which", "natural or enriched",
-                        "light water or heavy water", "h2o or d2o", "enrichment",
-                        "boundary condition", "reflective or vacuum",
-                        "i suggest", "i recommend", "does this look correct", 
-                        "would you like", "do you want", "can you confirm",
-                        "how about", "already exists", "already defined", 
-                        "different name", "unable to", "cannot create", 
-                        "please specify", "please provide", "?",
-                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
+                        "should that be", "what", "which", "correct", "confirm", "?",
+                        "plan", "propose", "intend to", "clarify", "suggest"
                     ]
                     
-                    # If the agent is asking for confirmation, we need to reply
                     if any(phrase in output.lower() for phrase in clarification_phrases):
-                        user_reply = self.input_func(f"\n{Colors.BOLD}Response (or Enter to cancel): {Colors.ENDC}").strip()
-                        
+                        user_reply = self.get_input("Response (or Enter to cancel):")
                         if not user_reply:
-                            print("Edit cancelled.")
+                            console.print("Edit cancelled.")
                             break
-                        
                         messages.append({"role": "assistant", "content": output})
                         messages.append({"role": "user", "content": user_reply})
-                        continue # Loop back to let the agent execute the next step
-                    
-                    # If no question asked, the edit is finished
+                        continue 
                     break
                     
                 except Exception as e:
-                    print(f"{Colors.RED}Error: {e}{Colors.ENDC}")
+                    console.print(f"[error]Error: {e}[/error]")
                     break
 
     def create_step(self, step: str) -> str:
-        """
-        Use agent to help user create their version of this step.
-        Supports 'view' command and group summaries.
-        """
-        print(f"\n{Colors.HEADER}{'='*60}")
-        print(f"CREATE YOUR {step.upper()}")
-        print(f"{'='*60}{Colors.ENDC}\n")
+        console.print("\n")
+        console.rule(f"[bold]CREATE YOUR {step.upper()}[/bold]")
         
         consecutive_errors = 0  
         max_consecutive_errors = 3 
 
         while True:
-            # Enhanced prompt text
             prompt_text = f"Describe {step}(s) to add, or type 'view' to see script/edit"
-            if step == "surface":
-                prompt_text += " (e.g., 'sphere radius 5')"
-            elif step == "material":
-                prompt_text += " (e.g., 'water')"
+            if step == "surface": prompt_text += " (e.g., 'sphere radius 5')"
+            elif step == "material": prompt_text += " (e.g., 'water')"
             
-            goal = self.input_func(f"{Colors.BOLD}{prompt_text} (or Enter to finish): {Colors.ENDC}").strip()   
+            goal = self.get_input(f"{prompt_text} (or Enter to finish):")
 
             if not goal:
-                print(f"{Colors.GREEN}Finished defining {step}s.{Colors.ENDC}")
+                console.print(f"[success]Finished defining {step}s.[/success]")
                 break
             
-            # --- VIEW MODE INTERCEPTION ---
             if goal.lower() == "view":
                 self._handle_view_mode()
                 continue
-            # ------------------------------
 
             if goal.lower() == "undo":
                 result = self.builder.undo_last()
-                print(f"{Colors.YELLOW}{result}{Colors.ENDC}")
+                console.print(f"[warning]{result}[/warning]")
                 continue
 
-            print(f"\nGenerating {step}...\n")
-            
-            # Track count to detect changes
             start_count = len(self.builder.defined.get(step, set()))
-
             current_context = self.builder.get_script()
             
-            messages = [
-                {
-                    "role": "user", 
-                    "content": (
-                        f"Here is the current MCDC script:\n```python\n{current_context}\n```\n\n"
-                        f"TASK: Create a {step}(s) based on this description: {goal}\n"
-                        f"IMPORTANT: Use existing variable names from the script where appropriate."
-                    )
-                }
-            ]
+            messages = [{
+                "role": "user", 
+                "content": (
+                    f"Here is the current MCDC script:\n```python\n{current_context}\n```\n\n"
+                    f"TASK: Create a {step}(s) based on this description: {goal}\n"
+                    f"IMPORTANT: Use existing variable names from the script where appropriate."
+                )
+            }]
             
-            max_attempts = 5 
-            
-            for attempt in range(max_attempts):
+            for attempt in range(5):
                 try:
-                    response = self.agent.invoke({"messages": messages})
-                    output = self._parse_agent_response(response)
-                    
-                    # Check if success
+                    with console.status(f"[bold yellow]Drafting {step}...[/bold yellow]", spinner="dots"):
+                        response = self.agent.invoke({"messages": messages})
+                        output = self._parse_agent_response(response)
+
                     current_count = len(self.builder.defined.get(step, set()))
                     
                     if current_count > start_count:
-                        print(f"\n{Colors.GREEN}" + "="*60)
-                        print("SUCCESS")
-                        print("="*60 + f"{Colors.ENDC}")
-                        print(output)
-                        
-                        # --- SHOW ALL ENTITIES OF THIS TYPE ---
-                        print(f"\n{Colors.HEADER}Current {step.upper()} definitions:{Colors.ENDC}")
-                        print(f"{Colors.CYAN}{self.builder.get_code_by_type(step)}{Colors.ENDC}")
-                        print(f"{Colors.GREEN}" + "="*60 + f"{Colors.ENDC}\n")
-                        
+                        console.print(Panel(output, title="[bold green]SUCCESS[/bold green]", border_style="green"))
+                        new_code = self.builder.get_code_by_type(step)
+                        console.print(f"\n[bold]Current {step.upper()} definitions:[/bold]")
+                        console.print(Syntax(new_code, "python", theme="monokai"))
                         consecutive_errors = 0
-                        break 
+                        break
 
                     # Clarification Logic
+                    console.print(Panel(Markdown(output), title="[bold blue]TUTOR[/bold blue]", border_style="blue"))
+                    
                     clarification_phrases = [
-                        "should that be", "what", "which", "natural or enriched",
-                        "light water or heavy water", "h2o or d2o", "enrichment",
-                        "boundary condition", "reflective or vacuum",
-                        "i suggest", "i recommend", "does this look correct", 
-                        "would you like", "do you want", "can you confirm",
-                        "how about", "already exists", "already defined", 
-                        "different name", "unable to", "cannot create", 
-                        "please specify", "please provide", "?",
-                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
+                        "should that be", "what", "which", "correct", "confirm", "?",
+                        "plan", "propose", "intend to", "clarify", "suggest"
                     ]
-                    
-                    print(f"\n{Colors.BLUE}TUTOR:{Colors.ENDC}")
-                    print(output + "\n")
-                    
+
                     if any(phrase in output.lower() for phrase in clarification_phrases):
-                        clarification = self.input_func(f"{Colors.BOLD}Your answer: {Colors.ENDC}").strip()
-                        if not clarification:
-                            break
+                        clarification = self.get_input("Your answer:")
+                        if not clarification: break
                         messages.append({"role": "assistant", "content": output})
                         messages.append({"role": "user", "content": clarification})
                         continue 
@@ -485,89 +377,63 @@ If the user provides ambiguous input, ask for clarification before calling the t
                     
                 except Exception as e:
                     consecutive_errors += 1
-                    print(f"\n{Colors.RED}An unexpected error occurred: {e}{Colors.ENDC}")
-                    if consecutive_errors >= max_consecutive_errors:
-                        break
+                    console.print(f"\n[error]An unexpected error occurred: {e}[/error]")
+                    if consecutive_errors >= max_consecutive_errors: break
 
-        # Final show of script for this step before moving on
         self._print_script()
         return self.builder.get_script()
     
     def run_onboarding(self):
-        """
-        Full 8-step (universes and lattices are optional) interactive curriculum.
-        """
-        print("\n" + "="*60)
-        print(f"{Colors.HEADER}Welcome to MCDC Onboarding!{Colors.ENDC}")
-        print("="*60)
-        print("\nI'll guide you through building a complete MCDC simulation.")
-        print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
+        console.print("\n")
+        console.rule("[bold cyan]Welcome to MCDC Onboarding![/bold cyan]")
+        console.print("\nI'll guide you through building a complete MCDC simulation.")
+        console.print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
         
-        # Map of step names to user-friendly descriptions
         steps = [
             ("material", "Materials (what things are made of)"),
             ("surface", "Surfaces (geometric boundaries)"),
             ("cell", "Cells (regions of space)"),
-            ("hierarchy", "Hierarchies (Universes & Lattices) [optional]"), # can be commented out to remove
+            ("hierarchy", "Hierarchies (Universes & Lattices) [optional]"),
             ("source", "Source (where particles start)"),
             ("tally", "Tally (what to measure)"),
             ("settings", "Settings (simulation parameters)"),
         ]
         
         for step, description in steps:
-            
             if self.teach_concept(step):
                 self.create_step(step)
             else:
-                print(f"Skipping {step}.")
+                console.print(f"[dim]Skipping {step}.[/dim]")
                 continue
         
-        # Final script
         final_script = self.builder.get_script()
         
-        print("\n" + "="*60)
-        print(f"{Colors.GREEN}ONBOARDING COMPLETE!{Colors.ENDC}")
-        print("="*60)
-        print("\nYour final MCDC script:\n")
-        print(final_script)
-        print("="*60)
+        console.print("\n")
+        console.rule("[bold green]ONBOARDING COMPLETE![/bold green]")
+        console.print(Syntax(final_script, "python", theme="monokai"))
         
-        # Offer to save
-        save = input(f"\n{Colors.BOLD}Save this script? [Y/n]: {Colors.ENDC}").strip().lower()
-        if save != "n":
-            filename = input(f"{Colors.BOLD}Filename (e.g., my_simulation.py): {Colors.ENDC}").strip()
-            if not filename:
-                filename = "mcdc_simulation.py"
-            if not filename.endswith(".py"):
-                filename += ".py"
+        if Confirm.ask("\n[bold]Save this script?[/bold]", default=True):
+            filename = self.get_input("Filename (e.g., my_simulation.py):")
+            if not filename: filename = "mcdc_simulation.py"
+            if not filename.endswith(".py"): filename += ".py"
             
             try:
                 Path(filename).write_text(final_script)
-                print(f"\n{Colors.GREEN}Saved to {filename}{Colors.ENDC}")
-                print(f"\nTo run: python {filename}")
+                console.print(f"\n[success]Saved to {filename}[/success]")
             except Exception as e:
-                print(f"\n{Colors.RED}Error saving file: {e}{Colors.ENDC}")
+                console.print(f"\n[error]Error saving file: {e}[/error]")
         
-        print(f"\n{Colors.CYAN}Thanks for using MCDC Tutor!{Colors.ENDC}\n")
-
+        console.print(f"\n[bold cyan]Thanks for using MCDC Tutor![/bold cyan]\n")
 
 if __name__ == "__main__":
-    """
-    Run the tutor from command line.
-    
-    Usage:
-        export GEMINI_API_KEY="your-key-here"
-        python -m llm_agent.onboarding.tutor
-    """
     try:
-
         llm = load_llm(temperature=0.1)
         tutor = MCDCTutor(llm)
         tutor.run_onboarding()
         
     except KeyboardInterrupt:
-        print("\n\nExiting. Your progress was not saved.")
+        console.print("\n\n[warning]Exiting. Your progress was not saved.[/warning]")
     except Exception as e:
-        print(f"\nFatal error: {e}")
+        console.print(f"\n[error]Fatal error: {e}[/error]")
         import traceback
         traceback.print_exc()

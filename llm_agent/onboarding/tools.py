@@ -111,6 +111,7 @@ class MaterialCalculator:
         # Calculate isotopic composition
         composition = {}
         for element, count in element_counts.items():
+            
             if element == 'U' and enrichment is not None:
                 # Special uranium enrichment handling
                 u235_mass = MaterialCalculator.NUCLEAR_DATA['U']['U235'][0]
@@ -122,6 +123,9 @@ class MaterialCalculator:
                 
                 # Apply to all uranium isotopes, scaling natural abundances
                 for isotope, (mass, abundance) in MaterialCalculator.NUCLEAR_DATA['U'].items():
+                    if isotope not in MaterialCalculator.DOMINANT_ISOTOPES:
+                        continue
+
                     if isotope == 'U235':
                         isotope_abundance = atom_frac_u235
                     elif isotope == 'U238':
@@ -135,6 +139,8 @@ class MaterialCalculator:
             else:
                 # Normal isotopic splitting by natural abundance
                 for isotope, (mass, abundance) in MaterialCalculator.NUCLEAR_DATA[element].items():
+                    if isotope not in MaterialCalculator.DOMINANT_ISOTOPES:
+                        continue
                     atoms_per_barn_cm = molecules_per_cm3 * count * abundance * 1e-24
                     if atoms_per_barn_cm > 1e-30:  # Filter out negligible isotopes
                         composition[isotope] = atoms_per_barn_cm
@@ -320,6 +326,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
            - x, y, z (tuple OR array): 
              For Uniform (MeshUniform): Must be a list of 3 values [start, end, N_intervals].
                -> Code will convert to tuple: (start, end, N)
+               -> DO NOT USE np.linspace here, just the a tuple of 3 values.
              For Structured (MeshStructured): Must be a numpy array of grid points.
                -> Use string "np.linspace(start, end, N+1)" for N intervals.
         """
