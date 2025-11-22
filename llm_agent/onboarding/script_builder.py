@@ -37,12 +37,15 @@ class ScriptBuilder:
             
         self.defined[entity_type].add(name)
     
-    def get_script(self) -> str:
-        """Reconstruct the script from imports and active entries."""
+    def get_script(self, include_run: bool = True) -> str:
+        """Reconstruct the script. Set include_run=False for visualization."""
         script_lines = list(self.imports)
         for entry in self.entries:
             script_lines.append(entry['code'])
-        script_lines.append("\nmcdc.run()\n")
+            
+        if include_run:
+            script_lines.append("\nmcdc.run()\n")
+            
         return "\n".join(script_lines)
     
     def has_entity(self, entity_type: str, name: str) -> bool:

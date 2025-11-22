@@ -5,6 +5,7 @@ from llm_agent.onboarding.tools import get_mcdc_tools
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from pathlib import Path
+import subprocess
 
 # UI Imports
 from prompt_toolkit import PromptSession
@@ -274,7 +275,16 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                 console.print("Returning to tutorial...")
                 break
                 
-            messages = [{"role": "user", "content": command}]
+            current_context = self.builder.get_script()
+            
+            messages = [{
+                "role": "user", 
+                "content": (
+                    f"Here is the current MCDC script:\n```python\n{current_context}\n```\n\n"
+                    f"EDIT/ADD TASK: {command}\n"
+                    f"IMPORTANT: You are editing/adding to an existing script. Use the variable names shown above."
+                )
+            }]
             
             while True:
                 try:
@@ -285,8 +295,13 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                     console.print(Panel(Markdown(output), title="Agent", border_style="green"))
                     
                     clarification_phrases = [
-                        "should that be", "what", "which", "correct", "confirm", "?",
-                        "plan", "propose", "intend to", "clarify", "suggest"
+                        "should that be", "what", "which",
+                        "i suggest", "i recommend", "does this look correct", 
+                        "would you like", "do you want", "can you confirm",
+                        "how about", "already exists", "already defined", 
+                        "different name", "unable to", "cannot create", 
+                        "please specify", "please provide", "?",
+                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
                     
                     if any(phrase in output.lower() for phrase in clarification_phrases):
@@ -303,6 +318,159 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                     console.print(f"[error]Error: {e}[/error]")
                     break
 
+    def run_visualization(self, debug_mode: bool = True):
+        """
+        Generates a temporary script to visualize geometry in 3D.
+        Decodes MCDC Quadric Coefficients (A..J) to reconstruct shapes.
+        """
+        console.print(f"\n[bold yellow]Generating 3D Geometry Preview...[/bold yellow]")
+
+        base_script = self.builder.get_script(include_run=False)
+        
+        plot_code = f"""
+# --- VISUALIZATION APPENDED BY TUTOR ---
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np
+import math
+
+# SETTINGS
+BOUNDS = 15.0 
+RESOLUTION = 20
+
+def decode_and_plot(ax, obj, name, U, V):
+    # Extract Quadric Coefficients (Default to 0.0 if missing)
+    A = getattr(obj, 'A', 0.0)
+    B = getattr(obj, 'B', 0.0)
+    C = getattr(obj, 'C', 0.0)
+    G = getattr(obj, 'G', 0.0)
+    H = getattr(obj, 'H', 0.0)
+    I = getattr(obj, 'I', 0.0)
+    J = getattr(obj, 'J', 0.0)
+
+    # --- CASE 1: PLANES (Linear terms only) ---
+    # Check if quadratic terms (A,B,C) are basically zero
+    if abs(A) < 1e-9 and abs(B) < 1e-9 and abs(C) < 1e-9:
+        
+        # Plane Z: Iz + J = 0  ->  z = -J/I
+        if abs(I) > 1e-9:
+            z_val = -J / I
+            print(f"  -> Plotting {{name}} as PlaneZ (z={{z_val:.2f}})")
+            ax.plot_surface(U, V, np.full_like(U, z_val), alpha=0.2, color='blue')
+            return True
+            
+        # Plane X: Gx + J = 0  ->  x = -J/G
+        elif abs(G) > 1e-9:
+            x_val = -J / G
+            print(f"  -> Plotting {{name}} as PlaneX (x={{x_val:.2f}})")
+            ax.plot_surface(np.full_like(U, x_val), U, V, alpha=0.2, color='red')
+            return True
+
+        # Plane Y: Hy + J = 0  ->  y = -J/H
+        elif abs(H) > 1e-9:
+            y_val = -J / H
+            print(f"  -> Plotting {{name}} as PlaneY (y={{y_val:.2f}})")
+            ax.plot_surface(U, np.full_like(U, y_val), V, alpha=0.2, color='green')
+            return True
+
+    # --- CASE 2: CYLINDERS (One quadratic term is zero) ---
+    # Cylinder Z: x^2 + y^2 + ... = 0  (A ~ B, C=0)
+    elif abs(A - B) < 1e-5 and abs(A) > 1e-9 and abs(C) < 1e-9:
+        # Center calculation: x0 = -G/2A, y0 = -H/2B
+        x0 = -G / (2 * A)
+        y0 = -H / (2 * B)
+        # Radius calculation: r = sqrt(x0^2 + y0^2 - J/A)
+        term = (x0**2 + y0**2) - (J / A)
+        if term > 0:
+            r = math.sqrt(term)
+            print(f"  -> Plotting {{name}} as CylinderZ (r={{r:.2f}})")
+            
+            z = np.linspace(-BOUNDS, BOUNDS, RESOLUTION)
+            theta = np.linspace(0, 2*np.pi, RESOLUTION)
+            theta_grid, z_grid = np.meshgrid(theta, z)
+            x_grid = r * np.cos(theta_grid) + x0
+            y_grid = r * np.sin(theta_grid) + y0
+            
+            ax.plot_surface(x_grid, y_grid, z_grid, alpha=0.3, color='cyan')
+            return True
+
+    # --- CASE 3: SPHERES (A ~ B ~ C) ---
+    elif abs(A - B) < 1e-5 and abs(A - C) < 1e-5 and abs(A) > 1e-9:
+        x0 = -G / (2 * A)
+        y0 = -H / (2 * B)
+        z0 = -I / (2 * C)
+        term = (x0**2 + y0**2 + z0**2) - (J / A)
+        if term > 0:
+            r = math.sqrt(term)
+            print(f"  -> Plotting {{name}} as Sphere (r={{r:.2f}})")
+            
+            u = np.linspace(0, 2 * np.pi, RESOLUTION)
+            v = np.linspace(0, np.pi, RESOLUTION)
+            x = r * np.outer(np.cos(u), np.sin(v)) + x0
+            y = r * np.outer(np.sin(u), np.sin(v)) + y0
+            z = r * np.outer(np.ones(np.size(u)), np.cos(v)) + z0
+            
+            ax.plot_surface(x, y, z, alpha=0.3, color='magenta')
+            return True
+
+    return False
+
+def plot_3d_debug(local_vars):
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title("Geometry Debugger")
+    ax.set_xlim(-BOUNDS, BOUNDS)
+    ax.set_ylim(-BOUNDS, BOUNDS)
+    ax.set_zlim(-BOUNDS, BOUNDS)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+
+    grid = np.linspace(-BOUNDS, BOUNDS, RESOLUTION)
+    U, V = np.meshgrid(grid, grid)
+    
+    count = 0
+    print("-" * 40)
+    print("DEBUG: Decoding Quadric Surfaces...")
+
+    for name, obj in local_vars.items():
+        if name.startswith('_') or name in ['np', 'plt', 'mcdc']: continue
+        
+        # Duck typing: does it have quadric coefficients?
+        if hasattr(obj, 'A') and hasattr(obj, 'J'):
+            try:
+                if decode_and_plot(ax, obj, name, U, V):
+                    count += 1
+                else:
+                    print(f"  ! Could not decode shape for {{name}} (Complex Quadric?)")
+            except Exception as e:
+                print(f"  ! Error plotting {{name}}: {{e}}")
+        
+    if count == 0:
+        ax.text(0, 0, 0, "No Surfaces Found", color='black')
+        print("WARNING: No standard shapes found.")
+    
+    plt.show()
+
+try:
+    plot_3d_debug(locals())
+except Exception as e:
+    print(f"Visualization Fatal Error: {{e}}")
+"""
+        
+        viz_file = "temp_viz_script.py"
+        full_script = base_script + plot_code
+        Path(viz_file).write_text(full_script)
+        
+        try:
+            subprocess.run(["python", viz_file], check=True)
+            console.print("[success]Visualization closed.[/success]")
+        except subprocess.CalledProcessError:
+            console.print("[error]Visualization failed.[/error]")
+        finally:
+            Path(viz_file).unlink(missing_ok=True)
+
+
     def create_step(self, step: str) -> str:
         console.print("\n")
         console.rule(f"[bold]CREATE YOUR {step.upper()}[/bold]")
@@ -311,7 +479,7 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
         max_consecutive_errors = 3 
 
         while True:
-            prompt_text = f"Describe {step}(s) to add, or type 'view' to see script/edit"
+            prompt_text = f"Describe {step}(s) to add, 'view' to edit, or 'viz' to plot"
             if step == "surface": prompt_text += " (e.g., 'sphere radius 5')"
             elif step == "material": prompt_text += " (e.g., 'water')"
             
@@ -321,6 +489,11 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                 console.print(f"[success]Finished defining {step}s.[/success]")
                 break
             
+            if goal.lower().startswith("viz"):
+                debug_mode = "debug" in goal.lower()
+                self.run_visualization(debug_mode=debug_mode)
+                continue
+
             if goal.lower() == "view":
                 self._handle_view_mode()
                 continue
@@ -342,37 +515,59 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                 )
             }]
             
+            # GENERATION LOOP
             for attempt in range(5):
                 try:
                     with console.status(f"[bold yellow]Drafting {step}...[/bold yellow]", spinner="dots"):
                         response = self.agent.invoke({"messages": messages})
                         output = self._parse_agent_response(response)
 
+                    # Handle empty output edge case
+                    if not output or not output.strip():
+                        output = "(No text response provided by Agent. It may have executed a tool silently.)"
+
                     current_count = len(self.builder.defined.get(step, set()))
                     
+                    # Entities were added
                     if current_count > start_count:
                         console.print(Panel(output, title="[bold green]SUCCESS[/bold green]", border_style="green"))
                         new_code = self.builder.get_code_by_type(step)
                         console.print(f"\n[bold]Current {step.upper()} definitions:[/bold]")
                         console.print(Syntax(new_code, "python", theme="monokai"))
                         consecutive_errors = 0
-                        break
+                        break # Break inner loop, return to user prompt
 
-                    # Clarification Logic
-                    console.print(Panel(Markdown(output), title="[bold blue]TUTOR[/bold blue]", border_style="blue"))
-                    
+                    # Print the output so the user sees questions OR errors
+                    border_color = "red" if "ERROR" in output else "blue"
+                    title = "ERROR" if "ERROR" in output else "TUTOR"
+                    console.print(Panel(Markdown(output), title=f"[bold {border_color}]{title}[/bold {border_color}]", border_style=border_color))
+                
                     clarification_phrases = [
-                        "should that be", "what", "which", "correct", "confirm", "?",
-                        "plan", "propose", "intend to", "clarify", "suggest"
+                        "should that be", "what", "which",
+                        "i suggest", "i recommend", "does this look correct", 
+                        "would you like", "do you want", "can you confirm",
+                        "how about", "already exists", "already defined", 
+                        "different name", "unable to", "cannot create", 
+                        "please specify", "please provide", "?",
+                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
 
-                    if any(phrase in output.lower() for phrase in clarification_phrases):
-                        clarification = self.get_input("Your answer:")
-                        if not clarification: break
+                    # If it's an error or a question, let the user respond
+                    is_question = any(phrase in output.lower() for phrase in clarification_phrases)
+                    is_error = "ERROR" in output or "exception" in output.lower()
+
+                    if is_question or is_error:
+                        user_reply = self.get_input("Your answer (or Enter to cancel):")
+                        if not user_reply: 
+                            console.print("[dim]Cancelling current attempt...[/dim]")
+                            break 
+                        
                         messages.append({"role": "assistant", "content": output})
-                        messages.append({"role": "user", "content": clarification})
+                        messages.append({"role": "user", "content": user_reply})
                         continue 
                     else:
+                        # Agent said something that wasn't a success and wasn't a question.
+                        console.print("[warning]Agent finished without creating entities. Try rephrasing?[/warning]")
                         break
                     
                 except Exception as e:
