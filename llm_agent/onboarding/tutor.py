@@ -318,145 +318,212 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                     console.print(f"[error]Error: {e}[/error]")
                     break
 
-    def run_visualization(self, debug_mode: bool = True):
+    def run_visualization(self, axis: str = 'z', position: float = 0.0):
         """
-        Generates a temporary script to visualize geometry in 3D.
-        Decodes MCDC Quadric Coefficients (A..J) to reconstruct shapes.
+        Smart Visualizer:
+        - Extracts 'region' strings directly from ScriptBuilder history.
+        - Supports slicing along X, Y, or Z axis.
         """
-        console.print(f"\n[bold yellow]Generating 3D Geometry Preview...[/bold yellow]")
-
-        base_script = self.builder.get_script(include_run=False)
+        import re
         
-        plot_code = f"""
-# --- VISUALIZATION APPENDED BY TUTOR ---
+        # 1. Extract Cell Logic Strings
+        cell_logic_map = {}
+        has_cells = False
+        
+        for entry in self.builder.entries:
+            if entry['type'] == 'cell':
+                has_cells = True
+                match = re.search(r"region=(.+?)(?:,\s*\w+=|\))", entry['code'])
+                if match:
+                    cell_logic_map[entry['name']] = match.group(1).strip()
+
+        mode_name = f"Slice Scanner ({axis.upper()}={position})" if has_cells else "3D Wireframe"
+        console.print(f"\n[bold yellow]Generating Geometry Preview ({mode_name})...[/bold yellow]")
+        
+        base_script = self.builder.get_script(include_run=False)
+
+        # ==============================================================================
+        # MODE A: SLICE SCANNER (Dynamic Axis)
+        # ==============================================================================
+        slice_code = f"""
+# --- SLICE VISUALIZATION APPENDED BY TUTOR ---
+import matplotlib.pyplot as plt
+import numpy as np
+
+# INJECTED SETTINGS
+CELL_REGIONS = {str(cell_logic_map)}
+SLICE_AXIS = '{axis}'
+SLICE_VAL = {position}
+BOUNDS = 15.0
+RES = 150
+
+def run_slice_viz(local_vars):
+    print(f"Scanning {{RES}}x{{RES}} pixels at {{SLICE_AXIS.upper()}}={{SLICE_VAL}}...")
+
+    # 1. Identify Surfaces
+    surfaces = {{}}
+    for name, obj in local_vars.items():
+        if hasattr(obj, 'A') and hasattr(obj, 'J'):
+            surfaces[name] = obj
+
+    # 2. Helper: Evaluate Surface Equation
+    def eval_surf(s, x, y, z):
+        return (getattr(s,'A',0)*x**2 + getattr(s,'B',0)*y**2 + getattr(s,'C',0)*z**2 +
+                getattr(s,'D',0)*x*y  + getattr(s,'E',0)*y*z  + getattr(s,'F',0)*z*x +
+                getattr(s,'G',0)*x    + getattr(s,'H',0)*y    + getattr(s,'I',0)*z + 
+                getattr(s,'J',0))
+
+    # 3. Setup Dynamic Grid based on Axis
+    u = np.linspace(-BOUNDS, BOUNDS, RES)
+    v = np.linspace(-BOUNDS, BOUNDS, RES)
+    U, V = np.meshgrid(u, v)
+    
+    # Map 2D grid (U,V) to 3D coordinates (PX, PY, PZ)
+    if SLICE_AXIS == 'z':
+        PX, PY, PZ = U, V, np.full_like(U, SLICE_VAL)
+        xlabel, ylabel = 'X [cm]', 'Y [cm]'
+    elif SLICE_AXIS == 'y':
+        PX, PY, PZ = U, np.full_like(U, SLICE_VAL), V
+        xlabel, ylabel = 'X [cm]', 'Z [cm]'
+    elif SLICE_AXIS == 'x':
+        PX, PY, PZ = np.full_like(U, SLICE_VAL), U, V
+        xlabel, ylabel = 'Y [cm]', 'Z [cm]'
+
+    img = np.zeros((RES, RES)) - 1 
+    sorted_surfs = sorted(surfaces.keys(), key=len, reverse=True)
+    cell_names = list(CELL_REGIONS.keys())
+    
+    # 4. Scan Grid
+    for i in range(RES):
+        for j in range(RES):
+            # Get real 3D coordinates for this pixel
+            px, py, pz = PX[i,j], PY[i,j], PZ[i,j]
+            
+            for c_idx, c_name in enumerate(cell_names):
+                logic = CELL_REGIONS[c_name]
+                try:
+                    for s_name in sorted_surfs:
+                        if s_name in logic:
+                            # Evaluate using the 3D coordinate for this pixel
+                            val = eval_surf(surfaces[s_name], px, py, pz)
+                            logic = logic.replace(f"+{{s_name}}", str(val > 0))
+                            logic = logic.replace(f"-{{s_name}}", str(val < 0))
+                    
+                    logic = logic.replace("&", " and ").replace("|", " or ").replace("~", " not ")
+                    if eval(logic):
+                        img[i,j] = c_idx
+                        break 
+                except Exception:
+                    pass
+
+    # 5. Plot
+    fig, ax = plt.subplots(figsize=(8,8))
+    
+    if len(cell_names) > 0:
+        cmap = plt.get_cmap('tab20', len(cell_names))
+    else:
+        cmap = plt.get_cmap('Greys')
+        
+    masked_img = np.ma.masked_where(img == -1, img)
+    
+    ax.imshow(masked_img, origin='lower', extent=[-BOUNDS, BOUNDS, -BOUNDS, BOUNDS], 
+               cmap=cmap, vmin=0, vmax=len(cell_names)-1)
+    
+    # Legend
+    from matplotlib.patches import Patch
+    patches = [Patch(color=cmap(i), label=name) for i, name in enumerate(cell_names)]
+    ax.legend(handles=patches, loc='upper right', title="Cells")
+    
+    ax.set_title(f"Cell Region Slice ({{SLICE_AXIS.upper()}}={{SLICE_VAL}})")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(alpha=0.3, linestyle='--')
+    plt.show()
+
+try:
+    run_slice_viz(locals())
+except Exception as e:
+    print(f"Slice Viz Error: {{e}}")
+"""
+
+        # MODE B: WIREFRAME (For Surfaces)
+        wireframe_code = r"""
+# --- WIREFRAME VISUALIZATION APPENDED BY TUTOR ---
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import math
 
-# SETTINGS
-BOUNDS = 15.0 
-RESOLUTION = 20
-
-def decode_and_plot(ax, obj, name, U, V):
-    # Extract Quadric Coefficients (Default to 0.0 if missing)
-    A = getattr(obj, 'A', 0.0)
-    B = getattr(obj, 'B', 0.0)
-    C = getattr(obj, 'C', 0.0)
-    G = getattr(obj, 'G', 0.0)
-    H = getattr(obj, 'H', 0.0)
-    I = getattr(obj, 'I', 0.0)
-    J = getattr(obj, 'J', 0.0)
-
-    # --- CASE 1: PLANES (Linear terms only) ---
-    # Check if quadratic terms (A,B,C) are basically zero
-    if abs(A) < 1e-9 and abs(B) < 1e-9 and abs(C) < 1e-9:
-        
-        # Plane Z: Iz + J = 0  ->  z = -J/I
-        if abs(I) > 1e-9:
-            z_val = -J / I
-            print(f"  -> Plotting {{name}} as PlaneZ (z={{z_val:.2f}})")
-            ax.plot_surface(U, V, np.full_like(U, z_val), alpha=0.2, color='blue')
-            return True
-            
-        # Plane X: Gx + J = 0  ->  x = -J/G
-        elif abs(G) > 1e-9:
-            x_val = -J / G
-            print(f"  -> Plotting {{name}} as PlaneX (x={{x_val:.2f}})")
-            ax.plot_surface(np.full_like(U, x_val), U, V, alpha=0.2, color='red')
-            return True
-
-        # Plane Y: Hy + J = 0  ->  y = -J/H
-        elif abs(H) > 1e-9:
-            y_val = -J / H
-            print(f"  -> Plotting {{name}} as PlaneY (y={{y_val:.2f}})")
-            ax.plot_surface(U, np.full_like(U, y_val), V, alpha=0.2, color='green')
-            return True
-
-    # --- CASE 2: CYLINDERS (One quadratic term is zero) ---
-    # Cylinder Z: x^2 + y^2 + ... = 0  (A ~ B, C=0)
-    elif abs(A - B) < 1e-5 and abs(A) > 1e-9 and abs(C) < 1e-9:
-        # Center calculation: x0 = -G/2A, y0 = -H/2B
-        x0 = -G / (2 * A)
-        y0 = -H / (2 * B)
-        # Radius calculation: r = sqrt(x0^2 + y0^2 - J/A)
-        term = (x0**2 + y0**2) - (J / A)
-        if term > 0:
-            r = math.sqrt(term)
-            print(f"  -> Plotting {{name}} as CylinderZ (r={{r:.2f}})")
-            
-            z = np.linspace(-BOUNDS, BOUNDS, RESOLUTION)
-            theta = np.linspace(0, 2*np.pi, RESOLUTION)
-            theta_grid, z_grid = np.meshgrid(theta, z)
-            x_grid = r * np.cos(theta_grid) + x0
-            y_grid = r * np.sin(theta_grid) + y0
-            
-            ax.plot_surface(x_grid, y_grid, z_grid, alpha=0.3, color='cyan')
-            return True
-
-    # --- CASE 3: SPHERES (A ~ B ~ C) ---
-    elif abs(A - B) < 1e-5 and abs(A - C) < 1e-5 and abs(A) > 1e-9:
-        x0 = -G / (2 * A)
-        y0 = -H / (2 * B)
-        z0 = -I / (2 * C)
-        term = (x0**2 + y0**2 + z0**2) - (J / A)
-        if term > 0:
-            r = math.sqrt(term)
-            print(f"  -> Plotting {{name}} as Sphere (r={{r:.2f}})")
-            
-            u = np.linspace(0, 2 * np.pi, RESOLUTION)
-            v = np.linspace(0, np.pi, RESOLUTION)
-            x = r * np.outer(np.cos(u), np.sin(v)) + x0
-            y = r * np.outer(np.sin(u), np.sin(v)) + y0
-            z = r * np.outer(np.ones(np.size(u)), np.cos(v)) + z0
-            
-            ax.plot_surface(x, y, z, alpha=0.3, color='magenta')
-            return True
-
-    return False
-
-def plot_3d_debug(local_vars):
+def run_wireframe_viz(local_vars):
+    BOUNDS = 15.0
+    RES = 20
+    
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    ax.set_title("Geometry Debugger")
-    ax.set_xlim(-BOUNDS, BOUNDS)
-    ax.set_ylim(-BOUNDS, BOUNDS)
-    ax.set_zlim(-BOUNDS, BOUNDS)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-
-    grid = np.linspace(-BOUNDS, BOUNDS, RESOLUTION)
-    U, V = np.meshgrid(grid, grid)
+    ax.set_title("Surface Wireframe Preview")
+    ax.set_xlim(-BOUNDS, BOUNDS); ax.set_ylim(-BOUNDS, BOUNDS); ax.set_zlim(-BOUNDS, BOUNDS)
+    ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
     
-    count = 0
+    grid = np.linspace(-BOUNDS, BOUNDS, RES)
+    U, V = np.meshgrid(grid, grid)
+    found = 0
+
     print("-" * 40)
-    print("DEBUG: Decoding Quadric Surfaces...")
+    print("Scanning Surfaces...")
 
     for name, obj in local_vars.items():
-        if name.startswith('_') or name in ['np', 'plt', 'mcdc']: continue
+        if not (hasattr(obj, 'A') and hasattr(obj, 'J')): continue
         
-        # Duck typing: does it have quadric coefficients?
-        if hasattr(obj, 'A') and hasattr(obj, 'J'):
-            try:
-                if decode_and_plot(ax, obj, name, U, V):
-                    count += 1
-                else:
-                    print(f"  ! Could not decode shape for {{name}} (Complex Quadric?)")
-            except Exception as e:
-                print(f"  ! Error plotting {{name}}: {{e}}")
-        
-    if count == 0:
-        ax.text(0, 0, 0, "No Surfaces Found", color='black')
-        print("WARNING: No standard shapes found.")
-    
+        try:
+            A, B, C = getattr(obj,'A',0), getattr(obj,'B',0), getattr(obj,'C',0)
+            G, H, I, J = getattr(obj,'G',0), getattr(obj,'H',0), getattr(obj,'I',0), getattr(obj,'J',0)
+            
+            if abs(A)+abs(B)+abs(C) < 1e-9:
+                if abs(I) > 1e-9:   # Plane Z
+                    val = -J/I; ax.plot_surface(U, V, np.full_like(U, val), alpha=0.2, color='blue')
+                elif abs(G) > 1e-9: # Plane X
+                    val = -J/G; ax.plot_surface(np.full_like(U, val), U, V, alpha=0.2, color='red')
+                elif abs(H) > 1e-9: # Plane Y
+                    val = -J/H; ax.plot_surface(U, np.full_like(U, val), V, alpha=0.2, color='green')
+                found += 1
+
+            elif abs(C) < 1e-9 and abs(A-B) < 1e-5 and abs(A) > 1e-9: # Cylinder Z
+                x0, y0 = -G/(2*A), -H/(2*B)
+                r = math.sqrt(max(0, x0**2 + y0**2 - J/A))
+                z = np.linspace(-BOUNDS, BOUNDS, RES)
+                th = np.linspace(0, 2*np.pi, RES)
+                TH, Z = np.meshgrid(th, z)
+                Xg = r * np.cos(TH) + x0
+                Yg = r * np.sin(TH) + y0
+                ax.plot_surface(Xg, Yg, Z, alpha=0.3, color='cyan')
+                found += 1
+
+            elif abs(A-B) < 1e-5 and abs(A-C) < 1e-5 and abs(A) > 1e-9: # Sphere
+                x0, y0, z0 = -G/(2*A), -H/(2*B), -I/(2*C)
+                r = math.sqrt(max(0, x0**2 + y0**2 + z0**2 - J/A))
+                u = np.linspace(0, 2*np.pi, RES)
+                v = np.linspace(0, np.pi, RES)
+                Xg = r * np.outer(np.cos(u), np.sin(v)) + x0
+                Yg = r * np.outer(np.sin(u), np.sin(v)) + y0
+                Zg = r * np.outer(np.ones(np.size(u)), np.cos(v)) + z0
+                ax.plot_surface(Xg, Yg, Zg, alpha=0.3, color='magenta')
+                found += 1
+                
+        except Exception as e:
+            print(f"  ! Error plotting {name}: {e}")
+
+    if found == 0:
+        ax.text(0,0,0, "No Surfaces", color='k')
     plt.show()
 
 try:
-    plot_3d_debug(locals())
+    run_wireframe_viz(locals())
 except Exception as e:
-    print(f"Visualization Fatal Error: {{e}}")
+    print(f"Wireframe Error: {e}")
 """
+
+        # Select and Inject
+        plot_code = slice_code if has_cells else wireframe_code
         
         viz_file = "temp_viz_script.py"
         full_script = base_script + plot_code
@@ -490,8 +557,29 @@ except Exception as e:
                 break
             
             if goal.lower().startswith("viz"):
-                debug_mode = "debug" in goal.lower()
-                self.run_visualization(debug_mode=debug_mode)
+                # Check if we are doing 2D Slicing (Cells exist) or 3D Wireframe
+                has_cells = len(self.builder.defined.get('cell', set())) > 0
+                
+                # Default defaults
+                viz_axis = 'z'
+                viz_pos = 0.0
+
+                if has_cells:
+                    # Prompt user for slice details
+                    slice_input = self.get_input("Enter slice (e.g., 'z=5', 'y=0') [Default: z=0]:")
+                    
+                    if slice_input:
+                        import re
+                        # Regex to capture 'x', 'y', or 'z' and the number
+                        match = re.search(r"([xyz])\s*=?\s*([-\d.]+)", slice_input.lower())
+                        if match:
+                            viz_axis = match.group(1)
+                            viz_pos = float(match.group(2))
+                        else:
+                            console.print("[warning]Could not parse input. Using default Z=0.[/warning]")
+
+                # Pass these values to the visualizer
+                self.run_visualization(axis=viz_axis, position=viz_pos)
                 continue
 
             if goal.lower() == "view":
