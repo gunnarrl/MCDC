@@ -38,15 +38,47 @@ class ScriptBuilder:
         self.defined[entity_type].add(name)
     
     def get_script(self, include_run: bool = True) -> str:
-        """Reconstruct the script. Set include_run=False for visualization."""
-        script_lines = list(self.imports)
-        for entry in self.entries:
-            script_lines.append(entry['code'])
+        """
+        Reconstructs the script with strict MCDC ordering:
+        Materials -> Surfaces -> Cells -> Universes -> Lattices -> Sources -> Tallies -> Settings
+        """
+        
+        order = [
+            "material", 
+            "surface", 
+            "cell", 
+            "universe", 
+            "lattice", 
+            "source", 
+            "tally", 
+            "settings" 
+        ]
+        
+        lines = list(self.imports)
+        lines.append("") 
+        
+        # Collect entries by type
+        for section in order:
+            section_entries = [e for e in self.entries if e['type'] == section]
             
+            if section_entries:
+                lines.append(f"# === {section.upper()} DEFINITIONS ===")
+                for entry in section_entries:
+                    lines.append(entry['code'])
+                lines.append("") 
+
+        # everything else
+        others = [e for e in self.entries if e['type'] not in order]
+        if others:
+            lines.append("# === OTHER ===")
+            for entry in others:
+                lines.append(entry['code'])
+
         if include_run:
-            script_lines.append("\nmcdc.run()\n")
+            lines.append("# === RUN ===")
+            lines.append("mcdc.run()")
             
-        return "\n".join(script_lines)
+        return "\n".join(lines)
     
     def has_entity(self, entity_type: str, name: str) -> bool:
         return name in self.defined.get(entity_type, set())

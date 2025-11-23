@@ -668,45 +668,90 @@ except Exception as e:
     
     def run_onboarding(self):
         console.print("\n")
-        console.rule("[bold cyan]Welcome to MCDC Onboarding![/bold cyan]")
-        console.print("\nI'll guide you through building a complete MCDC simulation.")
-        console.print("We'll follow a 7-step workflow used by all MCDC scripts.\n")
+        console.rule("[bold cyan]MCDC Onboarding[/bold cyan]")
+        console.print("Welcome! Select a category to edit or add components.")
+        console.print("MCDC scripts are built incrementally. Start with materials and surfaces, then move to cells, hierarchy, sources, tallies, and settings.\n")
+        console.print("You can also view/edit the full script or save your progress.\n")
+        console.print("[dim]Note: You can type 'undo' at any prompt to undo the last action.[/dim]")
+        console.print("[dim]Tip: Use 'view' to see the current script and make edits.[/dim]")
+        console.print("[dim]Tip: Use 'viz' to visualize your geometry after defining surfaces and cells.[/dim]")
         
-        steps = [
-            ("material", "Materials (what things are made of)"),
-            ("surface", "Surfaces (geometric boundaries)"),
-            ("cell", "Cells (regions of space)"),
-            ("hierarchy", "Hierarchies (Universes & Lattices) [optional]"),
-            ("source", "Source (where particles start)"),
-            ("tally", "Tally (what to measure)"),
-            ("settings", "Settings (simulation parameters)"),
-        ]
-        
-        for step, description in steps:
-            if self.teach_concept(step):
-                self.create_step(step)
-            else:
-                console.print(f"[dim]Skipping {step}.[/dim]")
-                continue
-        
-        final_script = self.builder.get_script()
-        
-        console.print("\n")
-        console.rule("[bold green]ONBOARDING COMPLETE![/bold green]")
-        console.print(Syntax(final_script, "python", theme="monokai"))
-        
-        if Confirm.ask("\n[bold]Save this script?[/bold]", default=True):
-            filename = self.get_input("Filename (e.g., my_simulation.py):")
-            if not filename: filename = "mcdc_simulation.py"
-            if not filename.endswith(".py"): filename += ".py"
+        # Map Menu Options to (Internal Step Name, Display Label)
+        menu_options = {
+            "1": ("material", "Materials"),
+            "2": ("surface", "Surfaces"),
+            "3": ("cell", "Cells"),
+            "4": ("hierarchy", "Universes & Lattices"),
+            "5": ("source", "Sources"),
+            "6": ("tally", "Tallies"),
+            "7": ("settings", "Settings"),
+        }
+
+        while True:
+            console.print("\n[bold]Main Menu:[/bold]")
             
-            try:
-                Path(filename).write_text(final_script)
-                console.print(f"\n[success]Saved to {filename}[/success]")
-            except Exception as e:
-                console.print(f"\n[error]Error saving file: {e}[/error]")
-        
-        console.print(f"\n[bold cyan]Thanks for using MCDC Tutor![/bold cyan]\n")
+            # Print dynamic menu with counts
+            for key, (step_id, label) in menu_options.items():
+                # Check how many items exist for this step
+                # Special handling for hierarchy which covers multiple types
+                if step_id == "hierarchy":
+                    count = len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))
+                else:
+                    count = len(self.builder.defined.get(step_id, set()))
+                
+                status = f"[green]({count} defined)[/green]" if count > 0 else "[dim](empty)[/dim]"
+                console.print(f"  [{key}] {label} {status}")
+            
+            console.print("  \[v] View/Edit/Add Full Script")
+            console.print("  \[s] Save & Exit")
+            console.print("  \[q] Quit (No Save)")
+            
+            choice = self.get_input("Select option:")
+            
+            if choice in menu_options:
+                step_id, label = menu_options[choice]
+                
+                # First time visiting this step? Teach the concept.
+                # (We check if the builder is empty for this specific type)
+                is_empty = False
+                if step_id == "hierarchy":
+                    is_empty = (len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))) == 0
+                else:
+                    is_empty = len(self.builder.defined.get(step_id, set())) == 0
+
+                if is_empty:
+                    # If user says "No" to "Ready to create?", we just go back to menu
+                    if self.teach_concept(step_id):
+                        self.create_step(step_id)
+                else:
+                    # Already knows it, go straight to builder
+                    self.create_step(step_id)
+                    
+            elif choice.lower() == 'v':
+                self._handle_view_mode()
+                
+            elif choice.lower() == 's':
+                final_script = self.builder.get_script()
+                console.print("\n")
+                console.print(Syntax(final_script, "python", theme="monokai"))
+                
+                filename = self.get_input("Filename (e.g., simulation.py):")
+                if not filename: filename = "mcdc_simulation.py"
+                if not filename.endswith(".py"): filename += ".py"
+                
+                try:
+                    Path(filename).write_text(final_script)
+                    console.print(f"[success]Saved to {filename}[/success]")
+                    break
+                except Exception as e:
+                    console.print(f"[error]Error saving: {e}[/error]")
+                    
+            elif choice.lower() == 'q':
+                if Confirm.ask("Quit without saving?"):
+                    console.print("[dim]Exiting...[/dim]")
+                    break
+            else:
+                console.print("[error]Invalid option[/error]")
 
 if __name__ == "__main__":
     try:
