@@ -1,155 +1,409 @@
 CONCEPT_LESSONS = {
     "material": {
         "concept": (
-            "A *material* defines what your geometry is made of—its isotopic composition, "
-            "mass density, and macroscopic nuclear cross-sections. Every cell must contain "
-            "exactly one material, and materials must be defined before they can be assigned."
+            "**Materials define the physics of particle interaction.**\n\n"
+            "MCDC uses two modes:\n"
+            "1. **Multi-Group (MG):** (`mcdc.MaterialMG`) **Recommended for beginners.** "
+            "You define macroscopic cross-sections manually. This offers full control over the physics "
+            "(scattering matrices, delayed neutrons, spectrums) without needing external data files.\n"
+            "2. **Continuous Energy (CE):** (`mcdc.Material`) **Advanced.** "
+            "Uses external nuclear data libraries (`MCDC_XSLIB`). You provide isotopic compositions, "
+            "and MCDC handles the physics lookup. It is much more computationally intensive."
         ),
+        "syntax": """# 1. Multi-Group (Full Kinetics Example)
+# G=1 energy group, D=1 delayed group
+fuel = mcdc.MaterialMG(
+    capture    = np.array([0.01]),       # Capture [/cm]
+    fission    = np.array([0.05]),       # Fission [/cm]
+    scatter    = np.array([[0.40]]),     # Scatter [g_out, g_in] [/cm]
+    nu_p       = np.array([2.4]),        # Prompt neutrons/fission
+)
+
+# 2. Continuous Energy (Requires Library)
+water = mcdc.Material(
+    nuclide_composition={'H1': 0.0668, 'O16': 0.0334}
+)""",
         "parts": (
-            "composition (dict mapping nuclide to density), density (float, g/cm³), "
-            "optional: capture/scatter/fission cross-section arrays for MG mode"
+            "** Multi-Group Parameters (MaterialMG) **\n"
+            "**Understanding G and D:**\n"
+            "* **G (Energy Groups):** Instead of exact energy, we sort particles into discrete 'buckets'. "
+            "Group 0 is usually the **fastest** (highest energy), and the last group is the **slowest** (thermal).\n"
+            "* **D (Delayed Precursor Groups):** Most neutrons are born instantly (Prompt). Some are born later "
+            "from decaying fission products (Precursors). We group these precursors by their decay time 'families'.\n\n"
+            "**The Parameters:**\n"
+            "\n**G**=Energy Groups and **D**=Delayed Precursor Groups:\n\n"
+            "| Param | Shape | Unit | Description |\n"
+            "| :--- | :--- | :--- | :--- |\n"
+            "| `capture` | 1D `[G]` | $/cm$ | Macroscopic capture cross-section. |\n"
+            "| `scatter` | 2D `[G,G]`| $/cm$ | Differential scatter `[g_out, g_in]`. |\n"
+            "| `fission` | 1D `[G]` | $/cm$ | Macroscopic fission cross-section. |\n"
+            "| `nu_s` | 1D `[G]` | - | Scattering multiplication (optional). |\n"
+            "| `nu_p` | 1D `[G]` | - | Prompt fission neutron yield. |\n"
+            "| `nu_d` | 2D `[D,G]`| - | Delayed precursor yield `[dg, g_in]`. |\n"
+            "| `chi_p` | 2D `[G,G]`| - | Prompt fission spectrum `[g_out, g_in]`. |\n"
+            "| `chi_d` | 2D `[G,D]`| - | Delayed neutron spectrum `[g_out, dg]`. |\n"
+            "| `speed` | 1D `[G]` | $cm/s$ | Average particle speed. |\n"
+            "| `decay_rate`| 1D `[D]` | $/s$ | Precursor group decay constant. |"
         ),
+        "tips": [
+            "**Shape Matters:** `scatter` is `[g_out, g_in]`. This means `scatter[0][1]` is scattering **FROM** group 1 **TO** group 0.",
+            "**Delayed Neutrons:** If you define `nu_d` (delayed yield), you usually must also define `decay_rate` and `chi_d`.",
+            "**CE Mode:** Requires environment variable `MCDC_XSLIB` pointing to your nuclear data directory."
+        ],
         "key_questions": [
-            "What is the difference between mcdc.material (continuous) and mcdc.MaterialMG (multigroup)?",
-            "How do I define a common material like water, air, or uranium?",
-            "What are the units for density and composition?",
-            "When should I use a nuclide card vs. direct macroscopic constants?"
+            "What is the difference between `nu_p` (prompt) and `nu_d` (delayed)?",
+            "Why is `chi_p` 2D? (It allows the fission spectrum to depend on the incident neutron's energy group)",
+            "What happens if I omit `speed`? (Transient/Time-dependent simulations will fail)"
         ]
     },
-    
     "surface": {
         "concept": (
-            "A *surface* is a geometric boundary (plane, sphere, cylinder, etc.) that defines "
-            "the inside vs. outside regions of your model. Surfaces are combined with boolean "
-            "operators (& for intersection, | for union) to create cell regions. The +/- sign "
-            "indicates which side of the surface is considered 'inside'."
+            "**Surfaces are used to define shapes and geometry.**\n\n"
+            "They are geometric boundaries that divide space into two half-spaces: "
+            "**Positive (+)** and **Negative (-)**. \n\n"
+            "**Crucial Concept:** With the exception of Spheres, MCDC surfaces are **infinite**.\n"
+            "* A `PlaneX` is an infinite wall extending forever in Y and Z.\n"
+            "* A `CylinderZ` is an infinite tube extending forever in Z.\n"
+            "To create a finite shape (like a fuel pellet), you must logically cut these infinite surfaces "
+            "later using Cells."
         ),
+        "syntax": """# 1. Axis-Aligned Planes (Simple)
+# Wall at x = -10.0, everything to the left is 'inside' (negative)
+left_wall = mcdc.Surface.PlaneX(x=-10.0, boundary_condition="vacuum")
+
+# 2. Infinite Cylinder (Tube)
+# Infinite along Z-axis, radius 10
+fuel_radius = mcdc.Surface.CylinderZ(center=[0.0, 0.0], radius=10.0)
+
+# 3. Generic Plane (Angled)
+# Ax + By + Cz + D = 0
+# Example: A 45-degree cut
+slant = mcdc.Surface.Plane(A=1.0, B=1.0, C=0.0, D=0.0)""",
         "parts": (
-            "surface_type (str: 'PlaneX', 'PlaneY', 'PlaneZ', 'Sphere', 'Cylinder', etc.), "
-            "parameters (list: position, radius, etc.), boundary_condition (optional: 'vacuum', 'reflective')"
+            "| Factory Method | Params | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `PlaneX` | `x` | Plane perpendicular to X-axis. |\n"
+            "| `PlaneY` | `y` | Plane perpendicular to Y-axis. |\n"
+            "| `PlaneZ` | `z` | Plane perpendicular to Z-axis. |\n"
+            "| `Plane` | `A,B,C,D` | Generic Plane ($Ax+By+Cz+D=0$). |\n"
+            "| `CylinderZ` | `center` [x,y], `radius` | Infinite tube along Z-axis. |\n"
+            "| `Sphere` | `center` [x,y,z], `radius` | A sphere. |\n\n"
+            "**Boundary Conditions:**\n"
+            "| Value | Effect |\n"
+            "| :--- | :--- |\n"
+            "| `\"interface\"` | (Default) Particle passes through. |\n"
+            "| `\"vacuum\"` | Particle is killed immediately. |\n"
+            "| `\"reflective\"` | Particle bounces back (mirror). |"
         ),
+        "tips": [
+            "**The 'Viz' Trick:** Since surfaces are invisible logic, use the `viz` command to see wireframes of your defined surfaces.",
+            "**Finite Shapes:** To make a finite cylinder of height 10cm, you need **three** surfaces: One `CylinderZ` (the sides) and two `PlaneZ` surfaces (top and bottom caps).",
+            "**Signs:** For Cylinders and Spheres, the 'inside' is usually the **Negative (-)** side, and the 'outside' is the **Positive (+)** side."
+        ],
         "key_questions": [
-            "What surface types are available and what parameters do they need?",
-            "How do I create a simple box, sphere, or cylinder?",
-            "What does the + or - sign before a surface mean?",
-            "How do I combine multiple surfaces to make a complex cell shape?"
+            "What happens if I forget a 'vacuum' boundary? (Particles travel forever, causing the simulation to hang)",
+            "How do I determine the + and - side of a Generic Plane? (Plug a point (x,y,z) into the equation; if result > 0, it's positive)",
+            "Does a PlaneX have thickness? (No, it is a mathematical boundary with zero thickness)"
         ]
     },
-    
     "cell": {
         "concept": (
-            "A *cell* is a region of space (defined by surfaces) filled with a material "
-            "or another universe. Cells are the building blocks of your geometry. "
-            "Each cell must specify a region (boolean expression of surfaces) and a fill "
-            "(material or sub-geometry). Cells can be translated or rotated."
+            "**Cells define physical volumes by combining Surfaces.**\n\n"
+            "A Cell requires two things:\n"
+            "1. **Region:** A Boolean combination of surfaces (`&` AND, `|` OR, `~` NOT). "
+            "It is best practice to define complex regions as variables *before* creating the cell.\n"
+            "2. **Fill:** The content of the cell (a `Material` object, `Universe`, `Lattice`, or `None` for void).\n\n"
+            "\n"
+            "**The Viz Tool:** Boolean logic is tricky. Use the `viz` command (e.g., `viz z=0`) "
+            "immediately after creating a cell to verify your shape."
         ),
-        "parts": (
-            "region (Region object: e.g., +s1 & -s2), fill (Material or Cell), "
-            "optional: translation (list), rotation (list)"
-        ),
-        "key_questions": [
-            "How do I define a cell that is the intersection of two surfaces?",
-            "What is the difference between fill=m1 and fill=another_cell?",
-            "What is a universe and when do I need one?",
-            "Can a cell contain multiple materials?"
-        ]
-    },
+        "syntax": """# 1. Define Regions (Logic)
+# Sphere: Inside (-) sphere
+inside_sphere = -sphere_surf
 
-    "hierarchy": {
-        "concept": (
-            "Hierarchies allow you to build complex, repeating structures without redefining geometry "
-            "thousands of times. Think of a 'Universe' as a container or a blueprint that groups cells together. "
-            "You can then place that Universe inside another Cell using the 'fill' parameter. "
-            "Lattices take this further by creating a grid where each voxel is filled by a specific Universe."
-        ),
-        "parts": (
-            "1. Universe: A named collection of cells. It has no boundaries itself; it extends infinitely "
-            "until 'clipped' by the cell that contains it.\n"
-            "2. Lattice: A structured grid (like a checkerboard). You define the grid lines (x, y, z) "
-            "and map each grid element (i, j, k) to a specific Universe.\n"
-            "3. Fill: The link between levels. A Cell in the main world can be 'filled' with a "
-            "Universe or Lattice instead of a Material."
-        ),
-        "key_questions": [
-            "How do I put a Universe inside a Cell? (Use the 'fill' parameter in create_cell)",
-            "What is the 'root' universe? (The top-level universe where particles start)",
-            "What are the steps to create a lattice? (Define grid lines, create universes, map them to the lattice)"
-        ]
-    },
+# Box: Intersection (&) of 6 half-spaces
+# (Right of left walls, Left of right walls)
+box = +x1 & -x2 & +y1 & -y2 & +z1 & -z2
 
-    "source": {
-        "concept": (
-            "A *source* defines where, when, and with what energy particles are born. "
-            "Sources can be point, line, surface, or volume distributions. "
-            "Energy can be mono-energetic, spectrum, or multigroup. "
-            "Direction can be isotropic (uniform in all directions) or a fixed vector."
-        ),
+# Channels: Union (|) of shapes
+# Use parentheses to group logic if needed
+channel_region = channel_1 | channel_2 | channel_3
+
+# 2. Define Cells
+# Simple: Fill sphere with fuel
+c_fuel = mcdc.Cell(region=inside_sphere, fill=fuel_mat)
+
+# Complex: The Box MINUS (~) the Sphere
+# "Inside the box AND NOT inside the sphere"
+c_moderator = mcdc.Cell(
+    region = box & ~inside_sphere, 
+    fill = water_mat
+)""",
         "parts": (
-            "position (list or bounds), energy (float or array), "
-            "direction (list or 'isotropic'), time (optional), group (for MG)"
+            "| Param | Type | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `region` | `logic` | Boolean combination of surfaces. |\n"
+            "| `fill` | `Material` | The material object filling the region. |\n"
+            "| `translation`| `[x,y,z]`| Optional shift of the fill content. |\n"
+            "| `rotation` | `[x,y,z]`| Optional rotation of the fill content. |\n\n"
+            "**Boolean Operators:**\n"
+            "| Sym | Logic | Meaning |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `&` | **AND** | Intersection (Must be inside A *and* B). |\n"
+            "| `|` | **OR** | Union (Inside A *or* B). |\n"
+            "| `~` | **NOT** | Complement (Everything *outside* A). |"
         ),
+        "tips": [
+            "**Surface Orientation:**\n"
+            " * **Planes:** `+` is the direction of the normal (usually Right/Up). `-` is opposite.\n"
+            " * **Quadrics (Sphere/Cyl):** `-` is **INSIDE**. `+` is **OUTSIDE**.",
+            "**Readability:** Define your region logic as variables (e.g., `core_region = ...`) before passing it to `mcdc.Cell`. It makes debugging much easier.",
+            "**Void:** Use `fill=None` to create a streaming void (vacuum) region."
+        ],
         "key_questions": [
-            "How do I place a point source at the origin?",
-            "How do I make a uniform volume source in a box?",
-            "What does 'isotropic' mean and when should I use it?",
-            "How do I set the source energy to 1 MeV?"
+            "How do I cut a hole in a block? (Use `block & ~hole_region`)",
+            "What if I leave a gap between cells? (Particles will trigger a 'Geometry Error' if they enter undefined space)",
+            "Can I define a region without creating a cell? (Yes! Regions are just logic objects. You can reuse them in multiple cells.)"
         ]
-    },
-    
-    "tally": {
+    }, "hierarchy": {
         "concept": (
-            "A *tally* is a detector that records what you want to measure: "
-            "particle flux, reaction rates, currents through surfaces, or mesh-binned data. "
-            "Tallies can be placed on surfaces, in cells, or on a structured mesh. "
-            "Multiple scores (e.g., flux, collision, net-current) can be recorded simultaneously."
+            "**Hierarchies let you build complex, repeating structures efficiently.**\n\n"
+            "Instead of defining 10,000 unique fuel pins, you define **one** pin and stamp it 10,000 times.\n"
+            "There are three levels to this system:\n"
+            "1. **Universe (The Stamp):** A collection of cells that acts as a blueprint. It has no boundaries itself.\n"
+            "2. **Lattice (The Grid):** A structured map (checkerboard) where you place Universes into grid slots.\n"
+            "3. **Fill (The Placement):** You place a Universe or Lattice inside a physical Cell to make it real.\n\n"
         ),
+        "syntax": """# STEP 1: Create the "Stamp" (Universe)
+# First, define the cells that make up a single pin
+c_fuel = mcdc.Cell(region=-pin_radius, fill=uo2)
+c_mod  = mcdc.Cell(region=+pin_radius, fill=water)
+
+# Group them into a Universe
+u_pin = mcdc.Universe(cells=[c_fuel, c_mod])
+
+# STEP 2: Create the "Grid" (Lattice)
+# Define a 3x3 grid using [Start, Pitch, Count] format
+# This maps indices (i,j) to universes
+lat = mcdc.Lattice(
+    x=[-1.5, 1.0, 3],  # Start at -1.5, Width 1.0, 3 Steps
+    y=[-1.5, 1.0, 3],
+    universes=[
+        [u_pin, u_pin, u_pin],
+        [u_pin, u_void, u_pin],
+        [u_pin, u_pin, u_pin]
+    ]
+)
+
+# STEP 3: Place it in the world
+# The lattice is infinite until you put it in a cell
+main_cell = mcdc.Cell(region=core_region, fill=lat)""",
         "parts": (
-            "tally_type ('Surface', 'Mesh', 'Cell'), geometry (surface, mesh, or cell), "
-            "scores (list of strings), energy_bins (optional), mu_bins (optional)"
+            "**1. Universe `mcdc.Universe`**\n"
+            "| Param | Type | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `cells` | `list` | List of Cell objects belonging to this universe. |\n"
+            "| `root` | `bool` | Set `True` if this is the top-level universe. |\n\n"
+            "**2. Lattice `mcdc.Lattice`**\n"
+            "| Param | Type | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `x, y, z` | `list` | Grid definition: `[Start, Pitch, Count]`. |\n"
+            "| `universes` | `list` | Nested list (2D or 3D) mapping grid layout. |\n\n"
+            "**Grid Logic:**\n"
+            "* `universes[0][0]` is the bottom-left corner (usually).\n"
+            "* The dimensions of the `universes` list must match the `Count` defined in x/y/z."
         ),
+        "tips": [
+            "**Mental Model:** A Universe is like a PNG image file. It doesn't appear on the screen (the simulation) until you place it inside an `<img>` tag (a Cell).",
+            "**The 'Mod' Trick:** When defining a lattice of fuel pins, usually the 'background' of the pin universe is the moderator (water). This ensures that when you tile them, the water connects seamlessly.",
+            "**Lattice Indices:** If you are defining a 2D lattice (X-Y), the `universes` array is indexed `[y_index][x_index]`. Be careful with row/column ordering!"
+        ],
         "key_questions": [
-            "What is the difference between TallySurface, TallyMesh, and TallyCell?",
-            "What scores are available (flux, collision, net-current)?",
-            "How do I bin my tally in energy or angle?",
-            "When should I use a mesh tally vs. a surface tally?"
+            "What happens if my lattice is larger than the cell filling it? (The lattice is 'clipped' by the cell boundaries)",
+            "Can I put a lattice inside another lattice? (Yes! This is how you model full cores: Pin -> Assembly Lattice -> Core Lattice)",
+            "Why do I need a 'root' universe? (Particles must start somewhere. The root universe is the global container for the entire simulation)"
         ]
-    },
-    
-    "settings": {
+    }, "source": {
         "concept": (
-            "*Settings* control the simulation: number of particles, batches, "
-            "convergence criteria, variance reduction, and output verbosity. "
-            "Settings are global and affect the entire simulation. "
-            "Critical simulations (eigenmode) require different settings than fixed-source problems."
+            "**Sources define the 'birth' of particles.**\n\n"
+            "Every particle needs an initial **Position**, **Direction**, **Energy**, and **Time**.\n"
+            "You can define these as fixed values (Point Source) or intervals (Volume Source).\n\n"
+            "**Multiple Sources:** You can define as many sources as you want! MCDC will randomly pick "
+            "one for each particle based on the `probability` parameter. "
+            "(e.g., Source A `probability=1`, Source B `probability=3` means particles are 75% likely to be born in B)."
         ),
+        "syntax": """# 1. Point Source (Simplest)
+# Isotropic (random direction) source at the origin
+src_point = mcdc.Source(
+    position=[0.0, 0.0, 0.0],
+    isotropic=True,
+    energy_group=0  # For MG mode (Group index 0)
+)
+
+# 2. Volume Source (Uniform Box)
+# Samples uniformly x=[-1,1], y=[-1,1], z=[-5,5]
+src_box = mcdc.Source(
+    x=[-1.0, 1.0],
+    y=[-1.0, 1.0],
+    z=[-5.0, 5.0],
+    isotropic=True,
+    energy_group=1
+)
+
+# 3. Mixing Sources (Complex)
+# 90% chance to be Background, 10% chance to be a Beam
+src_bkg  = mcdc.Source(x=[-10,10], probability=0.9)
+src_beam = mcdc.Source(position=[0,0,0], direction=[1,0,0], probability=0.1)""",
         "parts": (
-            "N_particle (int), N_batch (int), N_cycle (optional for eigenmode), "
-            "output (str: 'stdout', 'h5'), population_control (optional)"
+            "| Param | Type | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `position` | `[x,y,z]` | Fixed birth point. |\n"
+            "| `x, y, z` | `[min, max]` | Range for uniform spatial sampling. |\n"
+            "| `isotropic`| `bool` | `True` = Random direction (4π). |\n"
+            "| `direction`| `[u,v,w]` | Fixed direction vector. |\n"
+            "| `energy` | `float` | Particle energy (eV) for **CE** mode. |\n"
+            "| `energy_group`| `int` | Energy group index for **MG** mode. |\n"
+            "| `time` | `float` or `[t1, t2]` | Birth time (snapshot or interval). |\n"
+            "| `probability` | `float` | Relative weight for multi-source sampling. |"
         ),
+        "tips": [
+            "**The 'Lost Particle' Risk:** If a source spawns a particle inside a Void (or outside your geometry), it dies immediately. Make sure your source volume (`x,y,z`) is covered by a Material-filled Cell.",
+            "**Defaults:** If you omit `x/y/z` or `position`, it defaults to 0.0. If you omit `direction`, you **must** set `isotropic=True`.",
+            "**Spectrum:** You can pass a distribution to `energy_group` if you want a source that spans multiple groups (e.g., fission spectrum)."
+        ],
         "key_questions": [
-            "How many particles do I need for a good statistics?",
-            "What is the difference between N_particle and N_batch?",
-            "How do I control output files and verbosity?",
-            "What settings are needed for a criticality (k-eigenvalue) calculation?"
+            "How do I create a surface source? (Just define `x` and `y` ranges, but leave `z` as a single value or `None`)",
+            "What happens if probabilities don't sum to 1? (MCDC normalizes them automatically. 1.0 and 1.0 is the same as 50% and 50%)",
+            "Can I define a time-dependent source? (Yes, use `time=[start, end]` to simulate a pulse over a duration)"
         ]
-    },
-    
-    "run": {
+    }, "tally": {
         "concept": (
-            "`mcdc.run()` executes the simulation with all definitions you've provided. "
-            "It validates the input, initializes the particle bank, runs batches, "
-            "and writes tallies to the specified output file. "
-            "After running, you can inspect tallies to see flux, reaction rates, and k-effective (if eigenmode)."
+            "**Tallies are your sensors.**\n\n"
+            "They record physical quantities during the simulation. You can place them:\n"
+            "1. **Globally:** Measure total values for the whole system (`TallyGlobal`).\n"
+            "2. **On Surfaces:** Measure particles crossing a boundary (`TallySurface`).\n"
+            "3. **In Cells:** Measure reaction rates inside a specific volume (`TallyCell`).\n"
+            "4. **On a Mesh:** Create a 2D/3D grid to map flux or fission power (`TallyMesh`).\n\n"
+            "**Meshes:** To use a Mesh Tally, you must first define a `MeshUniform` (simple grid) "
+            "or `MeshStructured` (custom grid)."
         ),
+        "syntax": """# STEP 1: Define a Mesh (Optional, for TallyMesh)
+# Option A: Uniform Grid (Start, Stop, Number of Intervals)
+# Note: Use TUPLES (min, max, N)
+m_reg = mcdc.MeshUniform(x=(-5.0, 5.0, 100), y=(-5.0, 5.0, 100))
+
+# Option B: Structured Grid (Custom fence posts)
+# Use Arrays for specific boundaries
+m_custom = mcdc.MeshStructured(z=np.linspace(0, 10, 21))
+
+# STEP 2: Create Tallies
+# 1. Mesh Tally (Visual map of flux)
+mcdc.TallyMesh(
+    mesh=m_reg, 
+    scores=['flux', 'fission'],
+    name="plot_data"
+)
+
+# 2. Surface Tally (Leakage current)
+mcdc.TallySurface(
+    surface=right_wall, 
+    scores=['net-current'],
+    energy=np.logspace(-5, 7, 10) # Bin by energy
+)
+
+# 3. Cell Tally (Average flux in fuel)
+mcdc.TallyCell(cell=c_fuel, scores=['flux'])""",
         "parts": (
-            "No parameters – all configuration comes from preceding definitions. "
-            "Output: HDF5 file (.h5) with tallies, runtime info, and convergence data."
+            "**1. Mesh Definitions**\n"
+            "| Class | Params | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `MeshUniform` | `x,y,z` | Tuples: `(start, stop, N_intervals)`. |\n"
+            "| `MeshStructured`| `x,y,z` | Arrays: List of all grid points. |\n\n"
+            "**2. Tally Definitions**\n"
+            "| Class | Required Param | Use Case |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `TallyGlobal` | None | System-wide averages. |\n"
+            "| `TallySurface`| `surface` | Crossing rates (Leakage). |\n"
+            "| `TallyCell` | `cell` | Volumetric averages (Reaction rates). |\n"
+            "| `TallyMesh` | `mesh` | Spatial maps (Heat maps). |\n\n"
+            "**3. Scores & Bins**\n"
+            "| Score | Meaning | Bins (Optional) |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `'flux'` | Scalar Flux ($\phi$). Traffic density. | `energy`, `time` |\n"
+            "| `'net-current'` | Vector Flow ($J$). Net flow across surface. | `mu` (angle) |\n"
+            "| `'fission'` | Fission Rate. Power generation. | `energy`, `time` |\n"
+            "| `'density'` | Particle Density ($n$). | `time` |\n"
+            "| `'collision'` | Total Collision Rate. | `energy` |"
         ),
+        "tips": [
+            "**Flux vs. Current:**\n"
+            " * **Flux** measures 'track length per volume'. It doesn't care about direction. Use this for reaction rates.\n"
+            " * **Current** measures 'particles crossing a line'. It is directional (+ or -). Use this for surface leakage.",
+            "**Mesh Syntax:**\n"
+            " * `MeshUniform` takes a **tuple** of 3 values: `(start, stop, N)`.\n"
+            " * `MeshStructured` takes a **list/array** of $N+1$ values.",
+            "**Performance:** Tallying on a mesh with millions of voxels will consume a lot of RAM and slow down the simulation."
+        ],
         "key_questions": [
-            "What happens when I call mcdc.run()?",
-            "How do I know if the simulation finished successfully?",
-            "Where are the results stored?",
-            "What should I do if I get an error during the run?"
+            "How do I get the energy spectrum? (Add `energy=np.logspace(...)` to your tally params)",
+            "What is 'mu'? (The cosine of the angle relative to the reference vector. Used for angular flux tallies)",
+            "Can I define multiple tallies? (Yes, define as many as you need. They will all be saved to the .h5 output file)"
+        ]
+    }, "settings": {
+        "concept": (
+            "**Settings are the 'Control Panel' for the simulation engine.**\n\n"
+            "They control **Precision** (how many particles), **Mode** (Fixed Source vs. Criticality), "
+            "and **Memory** (Buffer sizes). These settings are global and affect the entire run.\n\n"
+            "**Two Main Modes:**\n"
+            "1. **Fixed Source:** (Default) Particles start from the sources you defined. Used for shielding/detectors.\n"
+            "2. **Eigenmode:** Calculates $k_{eff}$ (criticality). Particles from the previous cycle generate the source for the next."
+        ),
+        "syntax": """# 1. Basic Fixed Source Run
+# Runs 10 batches of 1000 particles each (Total = 10,000)
+mcdc.settings.N_particle = 1000
+mcdc.settings.N_batch    = 10
+mcdc.settings.output_name = "shielding_results.h5"
+
+# 2. Eigenmode Run (Criticality / k-eff)
+# Requires 'N_inactive' (to settle) and 'N_active' (to record)
+mcdc.settings.N_particle = 5000
+mcdc.settings.set_eigenmode(
+    N_inactive = 10,
+    N_active   = 40
+)
+
+# 3. Buffer Management (If you crash with memory errors)
+mcdc.settings.active_bank_buffer = 10000  # Max particles in flight
+mcdc.settings.source_bank_buffer_ratio = 2.0 # Buffer relative to N_particle""",
+        "parts": (
+            "**Core Parameters**\n"
+            "| Param | Type | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `N_particle` | `int` | Histories to run per batch (or per cycle). |\n"
+            "| `N_batch` | `int` | Number of batches (for Fixed Source statistics). |\n"
+            "| `rng_seed` | `int` | Seed for reproducibility. |\n"
+            "| `output_name`| `str` | Filename for HDF5 output (default 'output.h5'). |\n"
+            "| `progress_bar`| `bool` | Show/Hide the progress bar. |\n\n"
+            "**Eigenmode (Criticality)**\n"
+            "| Method | Params | Description |\n"
+            "| :--- | :--- | :--- |\n"
+            "| `set_eigenmode`| `N_inactive` | Cycles run to converge source (discarded). |\n"
+            "| | `N_active` | Cycles run to accumulate data (tallied). |\n\n"
+            "**Memory Buffers (Advanced)**\n"
+            "| Param | Description |\n"
+            "| :--- | :--- |\n"
+            "| `active_bank_buff` | Max number of particles alive simultaneously. |\n"
+            "| `census_bank_buff` | Buffer for particles crossing time boundaries. |"
+        ),
+        "tips": [
+            "**Statistics:** Simulation error drops with $\\frac{1}{\\sqrt{N}}$. To cut error in half, you need 4x the particles.",
+            "**Bank Full Errors:** If your simulation crashes with an error about 'banks' or 'buffers', increase `active_bank_buff` or `source_bank_buffer_ratio`.",
+            "**Eigenmode:** Always run 'Inactive' cycles first! The particle distribution needs time to settle into the fundamental eigenmode before you start recording valid data."
+        ],
+        "key_questions": [
+            "What is the difference between N_particle and N_batch? (N_particle is the sample size. N_batch splits that sample to estimate standard deviation/error)",
+            "How do I reproduce a specific run? (Set the `rng_seed` to a fixed integer)",
+            "Why is my k-eff fluctuating wildly? (You might need more particles per cycle, or more inactive cycles to reach convergence)"
         ]
     }
 }

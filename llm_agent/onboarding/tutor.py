@@ -29,6 +29,8 @@ custom_theme = Theme({
     "user": "bold magenta",
     "step": "magenta bold reverse",
     "code": "bold white",
+    "markdown.code": "bold dark_green", 
+    "code": "bold dark_green",
 })
 
 console = Console(theme=custom_theme)
@@ -161,8 +163,10 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
             return self.retriever
     
     def teach_concept(self, step: str) -> bool:
-        lesson = CONCEPT_LESSONS[step]
-        
+        lesson = CONCEPT_LESSONS.get(step)
+        if not lesson:
+            console.print(f"[error]No lesson found for {step}[/error]")
+            return False
         console.print("\n")
         console.rule(f"[step] STEP: {step.upper()} [/step]")
         
@@ -172,28 +176,29 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
             title="Concept",
             border_style="magenta"
         ))
+
+        # 2. Syntax
+        if 'syntax' in lesson:
+            console.print("\n[bold]Syntax Template:[/bold]")
+            syntax_highlighted = Syntax(
+                lesson['syntax'], 
+                "python", 
+                theme="monokai", 
+                line_numbers=False, 
+                word_wrap=True
+            )
+            console.print(syntax_highlighted)
         
-        # 2. Key Parts
-        console.print("\n[bold]Key parts:[/bold]")
+        # 3. Key Parts
+        console.print("\n[bold]Parameters:[/bold]")
         console.print(Markdown(lesson['parts']))
-        
-        # Show step-specific examples
-        try:
-            step_retriever = self.get_step_retriever(step)
-            expanded_query = self.expand_query("beginner simple example", step)
-            examples = step_retriever.invoke(expanded_query)
-            
-            if examples:
-                console.print("\n[dim]Reference Example:[/dim]")
-                snip = Syntax(examples[0].page_content[:500], "python", theme="ansi_dark")
-                console.print(snip)
-        except Exception as e:
-            console.print(f"\n[dim](Could not load example: {e})[/dim]")
-        
-        console.print(f"\n[warning]Common questions about {step}:[/warning]")
-        for i, q in enumerate(lesson.get('key_questions', [])[:3], 1):
-            console.print(f"  {i}. {q}")
-        
+
+        # 4. Tips
+        if 'tips' in lesson:
+            console.print("\n[bold yellow]Tips & Common Mistakes:[/bold yellow]")
+            for tip in lesson['tips']:
+                console.print(Markdown(f"* {tip}"))
+
         step_rag_chain = create_rag_chain_with_prompt(
             self.llm, self.get_step_retriever(step), self.rag_prompt
         )
