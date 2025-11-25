@@ -1,4 +1,6 @@
 from typing import List, Dict, Set
+from pathlib import Path
+import ast
 
 class ScriptBuilder:
     """
@@ -80,6 +82,105 @@ class ScriptBuilder:
             
         return "\n".join(lines)
     
+    def parse_and_load(self, filepath: str) -> str:
+        """
+        Parses an existing Python file and populates the ScriptBuilder state.
+        Uses AST to identify MCDC entities and variable names.
+        """
+        path = Path(filepath)
+        if not path.exists():
+            return f"Error: File {filepath} not found."
+
+        try:
+            source_code = path.read_text()
+            tree = ast.parse(source_code)
+        except Exception as e:
+            return f"Error parsing syntax: {e}"
+
+        # Reset current state
+        self.reset()
+        
+        # Helper to extract source code segment from a node
+        def get_segment(node):
+            return ast.get_source_segment(source_code, node)
+
+        # MCDC Class to Type Mapping
+        type_map = {
+            'Material': 'material', 'MaterialMG': 'material',
+            'Surface': 'surface',
+            'Cell': 'cell',
+            'Universe': 'universe', 'Lattice': 'lattice',
+            'MeshUniform': 'mesh', 'MeshStructured': 'mesh',
+            'Source': 'source',
+            'Tally': 'tally', # Covers TallyGlobal, TallySurface, etc.
+        }
+
+        count = 0
+        
+        for node in tree.body:
+            # 1. Handle Imports (Keep standard ones, ignore duplicates)
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                code = get_segment(node)
+                if code not in self.imports:
+                    self.imports.append(code)
+                continue
+
+            # 2. Handle Assignments (e.g., m1 = mcdc.Material(...))
+            if isinstance(node, ast.Assign):
+                # We assume single assignment for MCDC entities (m1 = ...)
+                target = node.targets[0]
+                value = node.value
+                
+                # Check if it's an MCDC call
+                if isinstance(value, ast.Call):
+                    # Resolve function name (handle mcdc.Material and mcdc.Surface.PlaneX)
+                    func_name = ""
+                    if isinstance(value.func, ast.Attribute):
+                        if isinstance(value.func.value, ast.Name) and value.func.value.id == 'mcdc':
+                            func_name = value.func.attr # e.g. 'Material'
+                        elif isinstance(value.func.value, ast.Attribute): # e.g. mcdc.Surface.PlaneX
+                            func_name = value.func.value.attr # 'Surface'
+                    
+                    # Determine Type
+                    entity_type = "other"
+                    for key, val in type_map.items():
+                        if func_name.startswith(key):
+                            entity_type = val
+                            break
+                    
+                    # Extract Name
+                    var_name = target.id if isinstance(target, ast.Name) else "unknown"
+                    
+                    self.add_line(get_segment(node), entity_type, var_name)
+                    count += 1
+                    continue
+
+                # Handle Settings (mcdc.settings.x = y)
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Attribute):
+                    if target.value.attr == 'settings':
+                        self.add_line(get_segment(node), "settings", target.attr)
+                        count += 1
+                        continue
+
+            # 3. Handle Standalone Expressions (e.g., mcdc.Source(...) without assignment)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                # Similar logic to assignments, but name is generic
+                if isinstance(node.value.func, ast.Attribute):
+                    attr_name = node.value.func.attr
+                    if "Source" in attr_name:
+                        self.add_line(get_segment(node), "source", f"source_{len(self.defined['source'])}")
+                        count += 1
+                        continue
+                    if "run" in attr_name:
+                        continue
+
+            # 4. Fallback: Add everything else as 'other' (comments, math, etc)
+            code_segment = get_segment(node)
+            if code_segment and "mcdc.run" not in code_segment:
+                self.add_line(code_segment, "other", "generic_code")
+
+        return f"Successfully loaded {count} entities from {path.name}."
+
     def has_entity(self, entity_type: str, name: str) -> bool:
         return name in self.defined.get(entity_type, set())
 

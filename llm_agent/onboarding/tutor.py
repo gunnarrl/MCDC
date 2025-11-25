@@ -728,6 +728,7 @@ except Exception as e:
                     console.print(f"  [{key}] {label} {status}")
                 
                 console.print("  \[v] View/Edit/Add Full Script")
+                console.print("  \[l] Load Script from File")
                 console.print("  \[s] Save & Exit")
                 console.print("  \[q] Quit (No Save)")
                 
@@ -754,6 +755,21 @@ except Exception as e:
                         
                 elif choice.lower() == 'v':
                     self._handle_view_mode()
+                
+                elif choice.lower() == 'l':
+                    filepath = self.get_input("Enter path to python script (or drag into terminal):")
+                    filepath = filepath.strip('"').strip("'")
+                    
+                    if filepath:
+                        with console.status(f"[bold yellow]Parsing {filepath}...[/bold yellow]"):
+                            result = self.builder.parse_and_load(filepath)
+                        
+                        if "Error" in result:
+                            console.print(f"[bold red]{result}[/bold red]")
+                        else:
+                            console.print(f"[bold green]{result}[/bold green]")
+                            # Show the user what we loaded
+                            self._print_script()
                     
                 elif choice.lower() == 's':
                     final_script = self.builder.get_script()
