@@ -6,33 +6,27 @@ from llm_agent.onboarding.tutor import MCDCTutor, Colors
 
 INPUT_SCRIPT = [
     # --- MATERIAL STEP ---
-    "", "Y", 
     "Create 3 materials named m1, m2, and m3 that have capture = 1, 1.5, 2",
     "", # Finish Step
 
     # --- SURFACE STEP ---
-    "", "Y",
     "create 4 surfaces named s1-4 that are planes with z=0, 2, 4, 6. The first and last surfaces should be vacuums",
     "", # Finish Step
 
     # --- CELL STEP ---
-    "", "Y",
     "fill the area between s1 and s2 with m2, between s2 and s3 with m3, and between s3 and s4 with m1",
     "", # Finish Step
 
     # --- SOURCE STEP ---
-    "", "Y",
     "create the source between z = 0-6.0, it should be isotropic and energy group 0", 
     "", # Finish Step
 
     # --- TALLY STEP ---
-    "", "Y",
     "create a tally surface on s4 that tracks the flow of particles over that surface",
     "create a mesh tally that uses a structured mesh from z=0-6 with 60 points. It should track flux and particle collisions, track their direction using 32 bins",
     "", # Finish Step
 
     # --- SETTINGS STEP ---
-    "", "Y",
     "Set N_particle=100 and N_batch=2",
     "", # Finish Step
 

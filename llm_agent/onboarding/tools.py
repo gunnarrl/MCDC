@@ -151,7 +151,7 @@ class MaterialCalculator:
 class CreateMaterialArgs(BaseModel):
     name: str = Field(..., description="Variable name for the material")
     mode: str = Field(..., description="'MG' (Multi-Group), 'CE' (Continuous Energy), or 'formula'")
-    properties: str = Field(..., description="JSON string of properties. MG keys: capture, scatter, fission, nu_p, speed (lists). CE: nuclide_composition (dict). Formula: formula (str), density (float), enrichment (float).")
+    properties: str = Field(..., description="JSON string of properties. MG keys: capture, scatter (2d), fission, nu_p, speed (lists). CE: nuclide_composition (dict). Formula: formula (str), density (float), enrichment (float).")
     description: Optional[str] = Field(None, description="Optional comment/description to place above this line")
 
 class CreateSurfaceArgs(BaseModel):
@@ -168,13 +168,13 @@ class CreateGeometryArgs(BaseModel):
     description: Optional[str] = Field(None, description="Optional comment/description")
 
 class CreateSourceArgs(BaseModel):
-    name: str = Field("source", description="Variable name (usually just 'source' unless multiple)")
+    name: str = Field("source", description="Internal identifier for the source")
     params: str = Field(..., description="JSON string of parameters: position, direction, energy, time, probability, etc.")
     description: Optional[str] = Field(None, description="Optional comment/description")
 
 class CreateTallyArgs(BaseModel):
     type_: str = Field(..., description="'global', 'surface', 'cell', or 'mesh'")
-    name: str = Field(..., description="Variable name")
+    name: str = Field("tally", description="Internal identifier for the tally")
     params: str = Field(..., description="JSON string. Must include 'scores'. For surface/cell tallies, include 'surface'/'cell' name. For mesh, include 'mesh' name.")
     description: Optional[str] = Field(None, description="Optional comment/description")
 
@@ -206,15 +206,16 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         KEYS for 'properties' JSON based on 'mode':
         
         1. mode='MG' (Multi-Group):
-           - capture (array): Capture cross-section.
-           - scatter (array): Scatter cross-section (G x G).
-           - fission (array): Fission cross-section.
-           - nu_p (array): Prompt neutrons per fission.
-           - nu_d (array): Delayed neutrons per fission.
-           - chi_p (array): Prompt fission spectrum.
-           - chi_d (array): Delayed fission spectrum.
-           - speed (array): Particle speed.
-           - decay_rate (array): Precursor decay rate.
+           - capture (1D array): Capture macroscopic cross-section [/cm].
+           - scatter (2D array): Differential scattering macroscopic cross-section [gout, gin] [/cm]. MUST be a list of lists.
+           - fission (1D array): Fission macroscopic cross-section [/cm].
+           - nu_s (1D array): Scattering multiplication.
+           - nu_p (1D array): Prompt fission neutron yield.
+           - nu_d (2D array): Delayed neutron precursor yield [dg, gin].
+           - chi_p (2D array): Prompt fission spectrum [gout, gin].
+           - chi_d (2D array): Delayed neutron spectrum [gout, dg].
+           - speed (1D array): Energy group speed [cm/s].
+           - decay (1D array): Precursor group decay constant [/s].
            
         2. mode='CE' (Continuous Energy):
            - nuclide_composition (dict): {'isotope': density, ...} e.g. {'U235': 1.0}
@@ -253,7 +254,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             elif mode.lower() == 'mg':
                 # Build MG arguments
                 lines = []
-                for key in ['capture', 'scatter', 'fission', 'nu_p', 'nu_d', 'speed', 'decay_rate']:
+                for key in ['capture', 'scatter', 'fission', 'nu_s', 'nu_p', 'nu_d', 'chi_p', 'chi_d', 'speed', 'decay_rate']:
+
+                    if key == 'scatter' and isinstance(val, list):
+                            if len(val) > 0 and not isinstance(val[0], list):
+                                val = [val]
                     if key in props:
                         val = props[key]
                         # Ensure lists become numpy arrays in string
@@ -389,7 +394,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             return f"ERROR: {e}"
 
     @tool(args_schema=CreateSourceArgs)
-    def create_source(name: str, params: str, description: Optional[str] = None) -> str:
+    def create_source(params: str, name: str = "source", description: Optional[str] = None) -> str:
         """Create a particle source.
         
         VALID KEYS for 'params':
@@ -410,9 +415,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 val = f"np.array({v})" if isinstance(v, list) else str(v)
                 args.append(f"{k}={val}")
             
-            code = f"{name} = mcdc.Source({', '.join(args)})"
-            # Source is unique in builder as it doesn't block duplicates usually, but let's track it
-            unique_name = name if not builder.has_entity("source", name) else f"{name}_{len(builder.defined['source'])}"
+            code = f"mcdc.Source({', '.join(args)})"
+            
+            # Even though the code doesn't use the name, we need it to track the entity in the builder
+            base_name = name if name else "source"
+            unique_name = base_name if not builder.has_entity("source", base_name) else f"{base_name}_{len(builder.defined['source'])}"
             
             _add_code(code, "source", unique_name, description)
             return f"Created Source '{unique_name}'"
@@ -420,7 +427,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             return f"ERROR: {e}"
 
     @tool(args_schema=CreateTallyArgs)
-    def create_tally(type_: str, name: str, params: str, description: Optional[str] = None) -> str:
+    def create_tally(type_: str, params: str, name: str = "tally", description: Optional[str] = None) -> str:
         """Create a tally.
         
         VALID TYPES and PARAMS:
@@ -444,11 +451,8 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             args = []
             for k, v in p.items():
                 val = str(v)
-                
-                # If it's a list, wrap in np.array. If it's a string (np.linspace), leave it.
                 if k in ['time', 'energy', 'mu'] and isinstance(v, list):
                     val = f"np.array({v})"
-                
                 args.append(f"{k}={val}")
                 
             class_map = {
@@ -460,7 +464,8 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             cls_name = class_map.get(type_.lower())
             if not cls_name: return f"ERROR: Unknown tally type {type_}"
             
-            code = f"{name} = mcdc.{cls_name}({', '.join(args)})"
+            code = f"mcdc.{cls_name}({', '.join(args)})"
+            
             _add_code(code, "tally", name, description)
             return f"Created {type_} tally '{name}'"
         except Exception as e:
@@ -485,18 +490,45 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         - census_bank_buff (int): Size of census bank buffer (multiples of N_particle).
         - source_bank_buff (int): Size of source bank buffer.
         - future_bank_buff (int): Size of future bank buffer.
+
+        EIGEN MODE PARAMS:
+        - N_inactive (int): Number of cycles not included when averaging the k-eigenvalue (default 0).
+        - N_active (int): Number of cycles to include for statistics of the k-eigenvalue (default 0).
+        - k_init (float): Initial k value to iterate on (default 1.0).
+        - gyration_radius (float) [optional]: Specify a gyration radius (default None).
+        - save_particle (bool): Whether final particle bank outputs (default False).
         """
         try:
             p = json.loads(params)
             lines = []
             if description: lines.append(f"# {description}")
             
+            # Eigenmode parameters
+            eigen_keys = ['N_inactive', 'N_active', 'gyration_radius', 'k_init', 'save_particle']
+            eigen_args = []
+            is_eigen = False
+
+            # Check for a generic 'k_eff' flag or specific eigenmode keys
+            if p.pop('k_eff', False): is_eigen = True
+
+            for key in eigen_keys:
+                if key in p:
+                    is_eigen = True
+                    val = p.pop(key) # Remove from dictionary so it's not set as attribute later
+                    val_str = f'"{val}"' if isinstance(val, str) else str(val)
+                    eigen_args.append(f"{key}={val_str}")
+
+            # Standard Attribute Assignments (N_particle, buffers, etc.)
             for k, v in p.items():
                 lines.append(f"mcdc.settings.{k} = {v}")
+
+            # set_eigenmode call if needed
+            if is_eigen:
+                lines.append(f"mcdc.settings.set_eigenmode({', '.join(eigen_args)})")
             
             code = "\n".join(lines)
             builder.add_line(code, "settings", "global_settings")
-            return f"Updated settings: {', '.join(p.keys())}"
+            return f"Updated settings: {', '.join(p.keys())}" + (" (and eigenmode)" if is_eigen else "")
         except Exception as e:
             return f"ERROR: {e}"
 

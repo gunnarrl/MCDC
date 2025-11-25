@@ -11,6 +11,8 @@ import subprocess
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style as PromptStyle
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.syntax import Syntax
@@ -34,6 +36,10 @@ custom_theme = Theme({
 })
 
 console = Console(theme=custom_theme)
+
+class BackToMenu(Exception):
+    """Raised when the user presses ESC to return to the main menu."""
+    pass
 
 class MCDCTutor:
     """
@@ -59,6 +65,12 @@ class MCDCTutor:
             'prompt': '#00aa00 bold',  # Green bold prompt
         })
         self.session = PromptSession()
+
+        self.kb = KeyBindings()
+
+        @self.kb.add(Keys.Escape)
+        def _(event):
+            event.app.exit(result="__ESCAPE__")
 
         self.doc_filter = {
             "type": {
@@ -140,14 +152,22 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
     
     def get_input(self, prompt_text=""):
         """
-        Unified input handler. Prints the prompt text using Rich, 
-        then gets input using prompt_toolkit.
+        Input handler
         """
         if prompt_text:
             console.print(f"[user]{prompt_text}[/user]")
         
-        # The tuple syntax is (style_class, text)
-        return self.session.prompt([('class:prompt', '> ')], style=self.prompt_style).strip()
+        result = self.session.prompt(
+            [('class:prompt', '> ')], 
+            style=self.prompt_style,
+            key_bindings=self.kb 
+        )
+
+        # Check if the user pressed Escape
+        if result == "__ESCAPE__":
+            raise BackToMenu()
+
+        return result.strip()
 
     def expand_query(self, query: str, step: str) -> str:
         base_query = f"{step} {query}"
@@ -694,69 +714,72 @@ except Exception as e:
 
         while True:
             console.print("\n[bold]Main Menu:[/bold]")
-            
-            # Print dynamic menu with counts
-            for key, (step_id, label) in menu_options.items():
-                # Check how many items exist for this step
-                # Special handling for hierarchy which covers multiple types
-                if step_id == "hierarchy":
-                    count = len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))
-                else:
-                    count = len(self.builder.defined.get(step_id, set()))
+            try:
+                # Print dynamic menu with counts
+                for key, (step_id, label) in menu_options.items():
+                    # Check how many items exist for this step
+                    # Special handling for hierarchy which covers multiple types
+                    if step_id == "hierarchy":
+                        count = len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))
+                    else:
+                        count = len(self.builder.defined.get(step_id, set()))
+                    
+                    status = f"[green]({count} defined)[/green]" if count > 0 else "[dim](empty)[/dim]"
+                    console.print(f"  [{key}] {label} {status}")
                 
-                status = f"[green]({count} defined)[/green]" if count > 0 else "[dim](empty)[/dim]"
-                console.print(f"  [{key}] {label} {status}")
-            
-            console.print("  \[v] View/Edit/Add Full Script")
-            console.print("  \[s] Save & Exit")
-            console.print("  \[q] Quit (No Save)")
-            
-            choice = self.get_input("Select option:")
-            
-            if choice in menu_options:
-                step_id, label = menu_options[choice]
+                console.print("  \[v] View/Edit/Add Full Script")
+                console.print("  \[s] Save & Exit")
+                console.print("  \[q] Quit (No Save)")
                 
-                # First time visiting this step? Teach the concept.
-                # (We check if the builder is empty for this specific type)
-                is_empty = False
-                if step_id == "hierarchy":
-                    is_empty = (len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))) == 0
-                else:
-                    is_empty = len(self.builder.defined.get(step_id, set())) == 0
+                choice = self.get_input("Select option:")
+                
+                if choice in menu_options:
+                    step_id, label = menu_options[choice]
+                    
+                    # First time visiting this step? Teach the concept.
+                    # (We check if the builder is empty for this specific type)
+                    is_empty = False
+                    if step_id == "hierarchy":
+                        is_empty = (len(self.builder.defined.get('universe', [])) + len(self.builder.defined.get('lattice', []))) == 0
+                    else:
+                        is_empty = len(self.builder.defined.get(step_id, set())) == 0
 
-                if is_empty:
-                    # If user says "No" to "Ready to create?", we just go back to menu
-                    if self.teach_concept(step_id):
+                    if is_empty:
+                        # If user says "No" to "Ready to create?", we just go back to menu
+                        if self.teach_concept(step_id):
+                            self.create_step(step_id)
+                    else:
+                        # Already knows it, go straight to builder
                         self.create_step(step_id)
+                        
+                elif choice.lower() == 'v':
+                    self._handle_view_mode()
+                    
+                elif choice.lower() == 's':
+                    final_script = self.builder.get_script()
+                    console.print("\n")
+                    console.print(Syntax(final_script, "python", theme="monokai"))
+                    
+                    filename = self.get_input("Filename (e.g., simulation.py):")
+                    if not filename: filename = "mcdc_simulation.py"
+                    if not filename.endswith(".py"): filename += ".py"
+                    
+                    try:
+                        Path(filename).write_text(final_script)
+                        console.print(f"[success]Saved to {filename}[/success]")
+                        break
+                    except Exception as e:
+                        console.print(f"[error]Error saving: {e}[/error]")
+                        
+                elif choice.lower() == 'q':
+                    if Confirm.ask("Quit without saving?"):
+                        console.print("[dim]Exiting...[/dim]")
+                        break
                 else:
-                    # Already knows it, go straight to builder
-                    self.create_step(step_id)
-                    
-            elif choice.lower() == 'v':
-                self._handle_view_mode()
-                
-            elif choice.lower() == 's':
-                final_script = self.builder.get_script()
-                console.print("\n")
-                console.print(Syntax(final_script, "python", theme="monokai"))
-                
-                filename = self.get_input("Filename (e.g., simulation.py):")
-                if not filename: filename = "mcdc_simulation.py"
-                if not filename.endswith(".py"): filename += ".py"
-                
-                try:
-                    Path(filename).write_text(final_script)
-                    console.print(f"[success]Saved to {filename}[/success]")
-                    break
-                except Exception as e:
-                    console.print(f"[error]Error saving: {e}[/error]")
-                    
-            elif choice.lower() == 'q':
-                if Confirm.ask("Quit without saving?"):
-                    console.print("[dim]Exiting...[/dim]")
-                    break
-            else:
-                console.print("[error]Invalid option[/error]")
+                    console.print("[error]Invalid option[/error]")
+            except BackToMenu:
+                console.print("\n[bold yellow]Returning to Main Menu...[/bold yellow]")
+                continue
 
 if __name__ == "__main__":
     try:
