@@ -10,7 +10,7 @@ from pathlib import Path
 
 LLM_AGENT_DIR = Path(__file__).parent
 DB_PATH = str(LLM_AGENT_DIR / "vectorstore")
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 def load_llm(temperature=0, model="gemini-2.5-flash"):
     """Load Gemini LLM with API key validation."""

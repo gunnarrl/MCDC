@@ -1,9 +1,12 @@
 from llm_agent.onboarding.concepts import CONCEPT_LESSONS
+from llm_agent.onboarding.debugger import DebugHandler
 from llm_agent.utils import load_llm, load_retriever, create_rag_chain_with_prompt
 from llm_agent.onboarding.script_builder import ScriptBuilder
 from llm_agent.onboarding.tools import get_mcdc_tools
 from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
 from pathlib import Path
 import subprocess
 
@@ -181,7 +184,24 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
             return vectorstore.as_retriever(search_kwargs={"k": 5, "filter": step_filter})
         except AttributeError:
             return self.retriever
-    
+
+    def get_hybrid_retriever(vectorstore):
+        # 1. Standard Vector Retriever
+        vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+        # 2. Keyword Retriever (BM25)
+        all_docs = vectorstore.get()["documents"] 
+        bm25_retriever = BM25Retriever.from_texts(all_docs)
+        bm25_retriever.k = 5
+
+        # 3. Combine them (weight generic text 0.5, exact keywords 0.5)
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=[bm25_retriever, vector_retriever],
+            weights=[0.5, 0.5]
+        )
+        
+        return ensemble_retriever
+
     def teach_concept(self, step: str) -> bool:
         lesson = CONCEPT_LESSONS.get(step)
         if not lesson:
@@ -729,6 +749,7 @@ except Exception as e:
                 
                 console.print("  \[v] View/Edit/Add Full Script")
                 console.print("  \[l] Load Script from File")
+                console.print("  \[d] Debug Existing Script")
                 console.print("  \[s] Save & Exit")
                 console.print("  \[q] Quit (No Save)")
                 
@@ -770,6 +791,16 @@ except Exception as e:
                             console.print(f"[bold green]{result}[/bold green]")
                             # Show the user what we loaded
                             self._print_script()
+                            
+                elif choice.lower() == 'd':
+                    debugger = DebugHandler(
+                        agent=self.agent,
+                        builder=self.builder,
+                        session=self.session,
+                        console=console,
+                        retriever=self.retriever
+                    )
+                    debugger.run()
                     
                 elif choice.lower() == 's':
                     final_script = self.builder.get_script()

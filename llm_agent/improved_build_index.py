@@ -23,8 +23,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="pypdf")
 CORPUS_ROOT = Path("llm_agent/corpus")
 OUTPUT_DIR = Path("llm_agent/scraped_docs")
 INDEX_DIR = Path("llm_agent/vectorstore")
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
+EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 # Document paths
 RTD_DOCS_PATH = OUTPUT_DIR / "function_docs.json"
@@ -45,11 +44,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S"
 )
 
-
-# ═══════════════════════════════════════════════════════════════════
-# NEW HELPER: Infer Section
-# ═══════════════════════════════════════════════════════════════════
-
 def infer_section_from_function(func_name: str) -> str:
     """Map function name to workflow section."""
     func_lower = func_name.lower()
@@ -58,8 +52,10 @@ def infer_section_from_function(func_name: str) -> str:
         return 'material'
     elif 'surface' in func_lower or 'plane' in func_lower or 'cylinder' in func_lower or 'sphere' in func_lower:
         return 'surface'
-    elif 'cell' in func_lower or 'universe' in func_lower or 'lattice' in func_lower:
+    elif 'cell' in func_lower:
         return 'cell'
+    elif 'universe' in func_lower or 'lattice' in func_lower:
+        return 'hierarchy'
     elif 'source' in func_lower:
         return 'source'
     elif 'tally' in func_lower or 'mesh' in func_lower:
