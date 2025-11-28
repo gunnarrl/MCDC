@@ -179,22 +179,26 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
     
     def get_step_retriever(self, step: str):
         try:
-            vectorstore = self.retriever.vectorstore
             step_filter = {"$and": [self.doc_filter, {"section": step}]}
-            return vectorstore.as_retriever(search_kwargs={"k": 5, "filter": step_filter})
+            return self.vectorstore.as_retriever(search_kwargs={"k": 5, "filter": step_filter})
         except AttributeError:
             return self.retriever
 
-    def get_hybrid_retriever(vectorstore):
-        # 1. Standard Vector Retriever
-        vector_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    def get_hybrid_retriever(self, vectorstore):
+        vector_retriever = vectorstore.as_retriever(
+            search_kwargs={"k": 5, "filter": self.doc_filter}
+        )
 
         # 2. Keyword Retriever (BM25)
-        all_docs = vectorstore.get()["documents"] 
-        bm25_retriever = BM25Retriever.from_texts(all_docs)
+        # We fetch all docs to build the keyword index
+        all_data = vectorstore.get()
+        all_texts = all_data["documents"]
+        
+        # Optional: Filter BM25 texts using metadata if possible, 
+        bm25_retriever = BM25Retriever.from_texts(all_texts)
         bm25_retriever.k = 5
 
-        # 3. Combine them (weight generic text 0.5, exact keywords 0.5)
+        # 3. Combine them (Equal weighting)
         ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, vector_retriever],
             weights=[0.5, 0.5]
@@ -791,7 +795,7 @@ except Exception as e:
                             console.print(f"[bold green]{result}[/bold green]")
                             # Show the user what we loaded
                             self._print_script()
-                            
+
                 elif choice.lower() == 'd':
                     debugger = DebugHandler(
                         agent=self.agent,
