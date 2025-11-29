@@ -350,7 +350,7 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                         "how about", "already exists", "already defined", 
                         "different name", "unable to", "cannot create", 
                         "please specify", "please provide", "?",
-                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
+                        "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
                     
                     if any(phrase in output.lower() for phrase in clarification_phrases):
@@ -382,18 +382,25 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
         for entry in self.builder.entries:
             if entry['type'] == 'cell':
                 has_cells = True
-                match = re.search(r"region=(.+?)(?:,\s*\w+=|\))", entry['code'])
-                if match:
-                    cell_logic_map[entry['name']] = match.group(1).strip()
+                code = entry['code']
+                
+                # Robust extraction that handles nested parentheses
+                if "region=" in code:
+                    # 1. Start reading after 'region='
+                    start_idx = code.find("region=") + len("region=")
+                    remainder = code[start_idx:]
+                    
+                    # 2. Find the end of the region argument
+                    # We assume the next argument is 'fill=', which is standard in your script
+                    if ", fill=" in remainder:
+                        region_str = remainder.split(", fill=")[0]
+                    else:
+                        # Fallback: If fill isn't there, take everything up to the last closing paren
+                        region_str = remainder.rsplit(")", 1)[0]
+                    
+                    cell_logic_map[entry['name']] = region_str.strip()
 
-        mode_name = f"Slice Scanner ({axis.upper()}={position})" if has_cells else "3D Wireframe"
-        console.print(f"\n[bold yellow]Generating Geometry Preview ({mode_name})...[/bold yellow]")
-        
-        base_script = self.builder.get_script(include_run=False)
-
-        # ==============================================================================
         # MODE A: SLICE SCANNER (Dynamic Axis)
-        # ==============================================================================
         slice_code = f"""
 # --- SLICE VISUALIZATION APPENDED BY TUTOR ---
 import matplotlib.pyplot as plt
@@ -686,7 +693,7 @@ except Exception as e:
                         "how about", "already exists", "already defined", 
                         "different name", "unable to", "cannot create", 
                         "please specify", "please provide", "?",
-                        "plan", "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
+                        "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
 
                     # If it's an error or a question, let the user respond
