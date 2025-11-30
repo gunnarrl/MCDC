@@ -167,6 +167,10 @@ class CreateGeometryArgs(BaseModel):
     params: str = Field(..., description="JSON string of parameters specific to the entity type")
     description: Optional[str] = Field(None, description="Optional comment/description")
 
+class SetRootUniverseArgs(BaseModel):
+    cells: List[str] = Field(..., description="List of cell names to include in the root universe")
+    description: Optional[str] = Field(None, description="Optional comment")
+
 class CreateSourceArgs(BaseModel):
     name: str = Field("source", description="Internal identifier for the source")
     params: str = Field(..., description="JSON string of parameters: position, direction, energy, time, probability, etc.")
@@ -181,6 +185,19 @@ class CreateTallyArgs(BaseModel):
 class SetSettingsArgs(BaseModel):
     params: str = Field(..., description="JSON string of settings: N_particle, N_batch, rng_seed, etc.")
     description: Optional[str] = Field(None, description="Optional comment/description")
+
+class ReplaceEntityArgs(BaseModel):
+    entity_type: str = Field(..., description="Type of entity: 'material', 'surface', 'cell', 'mesh', etc.")
+    name: str = Field(..., description="Variable name of the entity to replace")
+    new_code: str = Field(..., description="Complete new Python code for this entity")
+
+class InsertEntityArgs(BaseModel):
+    code: str = Field(..., description="Complete Python code for the new entity (e.g., 'plane_x = mcdc.Surface.PlaneX(x=5.0)')")
+    entity_type: str = Field(..., description="Type of entity: 'material', 'surface', 'cell', etc.")
+    name: str = Field(..., description="Variable name being defined in the code")
+    before: Optional[str] = Field(None, description="Name of entity to insert before (e.g., 'some_cell')")
+    after: Optional[str] = Field(None, description="Name of entity to insert after (e.g., 'some_surface')")
+    description: Optional[str] = Field(None, description="Optional comment to add above the code")
 
 class ManageScriptArgs(BaseModel):
     action: str = Field(..., description="'get' to view script, 'delete' to remove entity")
@@ -393,6 +410,17 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         except Exception as e:
             return f"ERROR: {e}"
 
+    @tool(args_schema=SetRootUniverseArgs)
+    def set_root_universe(cells: List[str], description: Optional[str] = None) -> str:
+        """Sets the root universe for the simulation (mcdc.simulation.set_root_universe)."""
+        
+        # Format the list of cells as a Python list string
+        cell_list_str = "[" + ", ".join(cells) + "]"
+        
+        code = f"mcdc.simulation.set_root_universe(cells={cell_list_str})"
+        builder.add_line(code, "universe", "root_universe")
+        return "Set root universe."
+
     @tool(args_schema=CreateSourceArgs)
     def create_source(params: str, name: str = "source", description: Optional[str] = None) -> str:
         """Create a particle source.
@@ -531,6 +559,77 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             return f"Updated settings: {', '.join(p.keys())}" + (" (and eigenmode)" if is_eigen else "")
         except Exception as e:
             return f"ERROR: {e}"
+    
+    @tool(args_schema=ReplaceEntityArgs)
+    def replace_entity(entity_type: str, name: str, new_code: str) -> str:
+        """
+        Replace an existing entity's code while keeping it in the same position.
+        
+        This is the PREFERRED method for fixing broken entities during debugging,
+        as it preserves the entity's location in the script (avoiding dependency issues).
+        
+        Example: To fix a mesh with wrong dimensions:
+        replace_entity(
+            entity_type='mesh',
+            name='fission_mesh',
+            new_code='fission_mesh = mcdc.MeshStructured(x=np.linspace(-10,10,201), z=np.linspace(-5,5,101))'
+        )
+        """
+        if not builder.has_entity(entity_type, name):
+            return f"ERROR: {entity_type} '{name}' does not exist. Use create_{entity_type} instead."
+        
+        if builder.replace_entity(entity_type, name, new_code):
+            return f"Replaced {entity_type} '{name}' in-place"
+        else:
+            return f"ERROR: Failed to replace {entity_type} '{name}'"
+
+    @tool(args_schema=InsertEntityArgs)
+    def insert_entity(code: str, entity_type: str, name: str, 
+                    before: Optional[str] = None, after: Optional[str] = None, 
+                    description: Optional[str] = None) -> str:
+        """
+        Insert a NEW entity into the script at a specific position.
+        
+        Use this when an entity is referenced but never defined (e.g., NameError).
+        
+        **Position Control** (pick one):
+        - before='entity_name' - Insert before this entity (RECOMMENDED for fixing dependencies)
+        - after='entity_name' - Insert after this entity
+        - Neither - Appends to end (not recommended for fixing errors)
+        
+        **Example 1**: Cell uses undefined surface
+        Error: "NameError: name 'plane_x' is not defined"
+        Solution:
+            insert_entity(
+                code='plane_x = mcdc.Surface.PlaneX(x=5.0)',
+                entity_type='surface',
+                name='plane_x',
+                before='fuel_cell'  # Insert before the cell that uses it
+            )
+        
+        **Example 2**: Tally uses undefined mesh
+        Error: "NameError: name 'flux_mesh' is not defined"
+        Solution:
+            insert_entity(
+                code='flux_mesh = mcdc.MeshUniform(x=(0, 10, 50), y=(0, 10, 50), z=(0, 10, 50))',
+                entity_type='mesh',
+                name='flux_mesh',
+                before='flux_tally'  # Insert before the tally
+            )
+        """
+        if builder.has_entity(entity_type, name):
+            return f"ERROR: {entity_type} '{name}' already exists. Use replace_entity to modify it."
+        
+        # Add description as comment if provided
+        full_code = f"# {description}\n{code}" if description else code
+        
+        success = builder.insert_entity(full_code, entity_type, name, before=before, after=after)
+        
+        if success:
+            position_desc = f" before '{before}'" if before else f" after '{after}'" if after else " at end"
+            return f"Inserted {entity_type} '{name}'{position_desc}"
+        else:
+            return f"ERROR: Failed to insert {entity_type} '{name}'"
 
     @tool(args_schema=ManageScriptArgs)
     def manage_script(action: str, entity_type: Optional[str] = None, name: Optional[str] = None) -> str:
@@ -565,6 +664,8 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         create_source,
         create_tally,
         set_settings,
+        replace_entity,
+        insert_entity,
         manage_script,
         search_docs
     ]

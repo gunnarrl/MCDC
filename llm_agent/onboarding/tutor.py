@@ -114,6 +114,7 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
 1.  **PROPOSE**: Explicitly list the plan.
 2.  **CONFIRM**: Ask "Does this plan look correct?"
 3.  **EXECUTE**: Only after confirmation. Use `description` on the FIRST entity to label the group.
+4.  **REPORT**: After executing the tools, you MUST provide a text summary confirming what was created.
 
 ### TOOL USAGE GUIDELINES
 **1. Creating Materials (`create_material`)**
@@ -141,7 +142,7 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
 2.  **Search Docs:** If "how to", search first.
 3.  **Clarify/Propose:** If ambiguous, ask.
 4.  **Tool Call:** Call the appropriate tool.
-5.  **Explain:** Briefly explain what you created.
+5.  **Explain:** Briefly explain what you created. Never return an empty string after tool execution.
 """
         
             self.agent = create_agent(
@@ -341,6 +342,12 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                         response = self.agent.invoke({"messages": messages})
                     
                     output = self._parse_agent_response(response)
+
+                    # --- ADDED SAFETY CHECK ---
+                    if not output or not output.strip():
+                        output = "(No text response provided by Agent. It may have executed a tool silently.)"
+                    # --------------------------
+
                     console.print(Panel(Markdown(output), title="Agent", border_style="green"))
                     
                     clarification_phrases = [
@@ -352,6 +359,10 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                         "please specify", "please provide", "?",
                         "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
                     ]
+                    
+                    # If the Agent asked a question OR if we caught an empty response (silent execution),
+                    # we usually want to break back to the main loop to show the updated script.
+                    # But if it's a clarification, we stay in the loop.
                     
                     if any(phrase in output.lower() for phrase in clarification_phrases):
                         user_reply = self.get_input("Response (or Enter to cancel):")

@@ -39,42 +39,52 @@ class ScriptBuilder:
             
         self.defined[entity_type].add(name)
     
-    def get_script(self, include_run: bool = True) -> str:
+    def get_script(self, include_run: bool = True, preserve_order: bool = True) -> str:
         """
-        Reconstructs the script with strict MCDC ordering:
-        Materials -> Surfaces -> Cells -> Universes -> Lattices -> Sources -> Tallies -> Settings
+        Reconstructs the script.
+        
+        Args:
+            include_run: Whether to append mcdc.run() at the end
+            preserve_order: If True, outputs entries in insertion order (best for complex scripts).
+                           If False, groups by type (materials, surfaces, cells, etc.)
         """
-        
-        order = [
-            "material", 
-            "surface", 
-            "cell", 
-            "universe", 
-            "lattice", 
-            "source", 
-            "tally", 
-            "settings" 
-        ]
-        
         lines = list(self.imports)
         lines.append("") 
         
-        # Collect entries by type
-        for section in order:
-            section_entries = [e for e in self.entries if e['type'] == section]
-            
-            if section_entries:
-                lines.append(f"# === {section.upper()} DEFINITIONS ===")
-                for entry in section_entries:
-                    lines.append(entry['code'])
-                lines.append("") 
-
-        # everything else
-        others = [e for e in self.entries if e['type'] not in order]
-        if others:
-            lines.append("# === OTHER ===")
-            for entry in others:
+        if preserve_order:
+            # INSERTION ORDER - respects dependencies
+            for entry in self.entries:
                 lines.append(entry['code'])
+        else:
+            # TYPE-BASED GROUPING - may break dependencies
+            order = [
+                "material", 
+                "surface", 
+                "cell", 
+                "universe", 
+                "lattice",
+                "mesh",  # MUST come before tallies that reference them
+                "source", 
+                "tally", 
+                "settings" 
+            ]
+            
+            for section in order:
+                section_entries = [e for e in self.entries if e['type'] == section]
+                
+                if section_entries:
+                    lines.append(f"# === {section.upper()} DEFINITIONS ===")
+                    for entry in section_entries:
+                        lines.append(entry['code'])
+                    lines.append("") 
+
+            # everything else
+            others = [e for e in self.entries if e['type'] not in order]
+            if others:
+                lines.append("# === OTHER ===")
+                for entry in others:
+                    lines.append(entry['code'])
+                lines.append("")
 
         if include_run:
             lines.append("# === RUN ===")
@@ -110,7 +120,7 @@ class ScriptBuilder:
             'Surface': 'surface',
             'Cell': 'cell',
             'Universe': 'universe', 'Lattice': 'lattice',
-            'MeshUniform': 'mesh', 'MeshStructured': 'mesh',
+            'MeshUniform': 'mesh', 'MeshStructured': 'mesh', 'Mesh': 'mesh',
             'Source': 'source',
             'Tally': 'tally', # Covers TallyGlobal, TallySurface, etc.
         }
@@ -213,6 +223,99 @@ class ScriptBuilder:
                 self.defined[entity_type].discard(name)
             return True
         return False
+    
+    def replace_code(self, old_code: str, new_code: str) -> bool:
+        """
+        Replace a specific code segment with new code.
+        Returns True if replacement was successful.
+        """
+        for entry in self.entries:
+            if entry['code'].strip() == old_code.strip():
+                entry['code'] = new_code
+                return True
+        return False
+    
+    def replace_entity(self, entity_type: str, name: str, new_code: str) -> bool:
+        """
+        Replace an entity's code while preserving its position in the script.
+        This is better than delete+recreate for debugging.
+        Returns True if replacement was successful.
+        """
+        for entry in self.entries:
+            if entry['type'] == entity_type and entry['name'] == name:
+                entry['code'] = new_code
+                return True
+        return False
+    
+    def insert_entity(self, code: str, entity_type: str, name: str, 
+                     before: str = None, after: str = None, position: int = None) -> bool:
+        """
+        Insert a new entity at a specific position in the script.
+        
+        Args:
+            code: The Python code to insert
+            entity_type: Type of entity ('material', 'surface', 'cell', etc.)
+            name: Variable name for the entity
+            before: Name of entity to insert before (optional)
+            after: Name of entity to insert after (optional)
+            position: Exact index to insert at (optional)
+        
+        Priority: position > before > after > append to end
+        Returns True if successful
+        """
+        # Check if entity already exists
+        if self.has_entity(entity_type, name):
+            return False
+        
+        new_entry = {
+            'code': code,
+            'type': entity_type,
+            'name': name
+        }
+        
+        # Determine insertion point
+        insert_idx = None
+        
+        if position is not None:
+            # Direct index insertion
+            insert_idx = max(0, min(position, len(self.entries)))
+        
+        elif before:
+            # Find the entity to insert before
+            for idx, entry in enumerate(self.entries):
+                if entry['name'] == before:
+                    insert_idx = idx
+                    break
+        
+        elif after:
+            # Find the entity to insert after
+            for idx, entry in enumerate(self.entries):
+                if entry['name'] == after:
+                    insert_idx = idx + 1
+                    break
+        
+        # Insert or append
+        if insert_idx is not None:
+            self.entries.insert(insert_idx, new_entry)
+        else:
+            self.entries.append(new_entry)
+        
+        # Register in defined set
+        if entity_type not in self.defined:
+            self.defined[entity_type] = set()
+        self.defined[entity_type].add(name)
+        
+        return True
+    
+    def find_entity_index(self, entity_type: str, name: str) -> int:
+        """
+        Find the index of an entity in the entries list.
+        Returns -1 if not found.
+        """
+        for idx, entry in enumerate(self.entries):
+            if entry['type'] == entity_type and entry['name'] == name:
+                return idx
+        return -1
     
     def get_code_by_type(self, entity_type: str) -> str:
         """Get the code for all entities of a specific type."""

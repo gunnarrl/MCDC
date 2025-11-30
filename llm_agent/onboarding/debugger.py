@@ -2,8 +2,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.status import Status
-from typing import Any, List, Dict, Union
+from typing import Any
 from prompt_toolkit import PromptSession
 from langchain_core.runnables import Runnable
 import subprocess
@@ -21,45 +20,90 @@ class DebugHandler:
 
     def _parse_agent_response(self, response: Any) -> str:
         """Helper to extract text from various LangChain response formats."""
-        if isinstance(response, str): return response
+        if isinstance(response, str): 
+            return response
         if isinstance(response, dict):
-            if 'output' in response: return response['output']
-            if 'content' in response: return response['content']
+            if 'output' in response: 
+                return response['output']
+            if 'content' in response: 
+                return response['content']
             if 'messages' in response and response['messages']:
                 return self._extract_message_content(response['messages'][-1])
-        if hasattr(response, 'content'): return response.content
-        return str(response)
+        if hasattr(response, 'content'): 
+            return response.content
+        
+        # Handle empty content gracefully
+        return ""
 
     def _extract_message_content(self, message: Any) -> str:
         """Extract content from a single message object."""
         content = None
-        if isinstance(message, dict): content = message.get('content', str(message))
-        elif hasattr(message, 'content'): content = message.content
-        else: return str(message)
+        if isinstance(message, dict): 
+            content = message.get('content', str(message))
+        elif hasattr(message, 'content'): 
+            content = message.content
+        else: 
+            return str(message)
         
         if isinstance(content, list):
-            # Handle multimodal content blocks
-            text_parts = [b.get('text', '') if isinstance(b, dict) else str(b) for b in content]
+            # Handle multimodal content blocks - filter out empty ones
+            text_parts = []
+            for b in content:
+                if isinstance(b, dict) and b.get('type') == 'text':
+                    text = b.get('text', '').strip()
+                    if text:  # Only add non-empty text
+                        text_parts.append(text)
+                elif isinstance(b, str) and b.strip():
+                    text_parts.append(b)
             return '\n'.join(text_parts)
-        return str(content)
+        
+        return str(content) if content else ""
 
     def show_diff(self, old_code: str, new_code: str):
         """Visualizes changes made to the script using a unified diff."""
         diff = list(unified_diff(
             old_code.splitlines(),
             new_code.splitlines(),
-            fromfile='Current Script',
-            tofile='Updated Script',
+            fromfile='Before',
+            tofile='After',
             lineterm=''
         ))
         
         if not diff:
+            self.console.print("[dim]No changes detected.[/dim]")
             return
 
         diff_text = "\n".join(diff)
         syntax = Syntax(diff_text, "diff", theme="monokai", word_wrap=True)
         self.console.print("\n")
-        self.console.print(Panel(syntax, title="[bold yellow]Applied Changes[/bold yellow]", border_style="yellow"))
+        self.console.print(Panel(syntax, title="[bold yellow]Changes Applied[/bold yellow]", border_style="yellow"))
+
+    def run_script(self) -> tuple[int, str]:
+        """
+        Run the current script and capture output.
+        Returns (return_code, stderr_output)
+        """
+        temp_file = "debug_temp.py"
+        try:
+            with open(temp_file, "w") as f:
+                # IMPORTANT: Use preserve_order=True for debugging
+                f.write(self.builder.get_script(preserve_order=True))
+            
+            result = subprocess.run(
+                [sys.executable, temp_file],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            return result.returncode, result.stderr
+        except subprocess.TimeoutExpired:
+            return -1, "ERROR: Script execution timed out (30s limit)"
+        except Exception as e:
+            return -1, f"ERROR: Failed to run script: {str(e)}"
+        finally:
+            if os.path.exists(temp_file): 
+                os.remove(temp_file)
 
     def run(self):
         if not self.builder.entries:
@@ -68,125 +112,217 @@ class DebugHandler:
 
         self.console.print("\n")
         self.console.rule("[bold red]DEBUG MODE[/bold red]")
+        self.console.print("[dim]The debugger will run your script and help fix errors.[/dim]")
+        self.console.print("[dim]Commands: 'yes' to apply fix, 'run' to test again, 'no'/'exit' to quit[/dim]\n")
 
-        # --- STEP 1: CAPTURE ERROR ---
-        error_msg = ""
-        use_auto_run = self.session.prompt("Run script now to capture error? (y/n): ")
+        # Enhanced system prompt for debugging context
+        debug_context = """
+=== DEBUG MODE INSTRUCTIONS ===
+
+You are debugging an EXISTING, WORKING MCDC script that has an error.
+Your ONLY job is to FIX THE SPECIFIC ERROR shown in the traceback.
+
+**CRITICAL RULES**:
+1. **NEVER suggest rewriting the entire script**
+2. **NEVER suggest converting to different functions** - the script uses direct mcdc.Material(), mcdc.Surface.PlaneX() calls and that's CORRECT
+3. **DO NOT create new entities** unless absolutely necessary to fix the error
+4. **ONLY modify/delete/recreate the specific broken entity**
+
+**COMMON ERRORS & FIXES**:
+
+1. **NameError: 'X' is not defined**
+   - Cause: Entity referenced but never created
+   - Fix: Use `insert_entity()` to add the missing definition BEFORE the entity that uses it
+   - Example: If `Cell(region=+plane_x)` fails, insert: `insert_entity(code='plane_x = mcdc.Surface.PlaneX(x=5.0)', entity_type='surface', name='plane_x', before='fuel_cell')`
+
+2. **NameError due to wrong order**
+   - Cause: Entity used before it's defined (both exist but wrong order)
+   - Fix: Use `replace_entity()` won't help here. Instead: delete the one that comes first, then recreate it after dependencies
+
+3. **IndexError in mesh tally** (index -XXX out of bounds)
+   - Cause: Mesh dimension has single grid point (degenerate dimension)
+   - Fix: Use `replace_entity()` to recreate mesh WITHOUT the degenerate dimension
+   - Example: If `MeshStructured(x=..., y=np.array([0.0]), z=...)` fails, replace with `MeshStructured(x=..., z=...)` (omit y entirely for 2D XZ slice)
+   - **KEY**: For 2D meshes, just don't pass the constant dimension - MCDC will handle it
+
+4. **TypeError: scatter must be 2D**
+   - Fix: Use `replace_entity()` wrapping in extra brackets: `scatter=np.array([[0.95]])` not `np.array([0.95])`
+
+5. **Lost particle / geometry errors**
+   - Check cell region boolean logic: use `&` not `and`, `|` not `or`
+
+**YOUR WORKFLOW**:
+1. Call `manage_script(action='get')` to see current state
+2. Identify the SPECIFIC broken entity from the error traceback
+3. Choose the right tool:
+   - **Missing entity**: `insert_entity(code, type, name, before='entity_that_uses_it')`
+   - **Broken entity**: `replace_entity(type, name, new_code)` (preserves position)
+   - **Wrong order**: `delete_entity()` then `create_*()` (moves to end)
+4. Explain briefly what you fixed
+
+**EXAMPLES**:
+
+**Example 1** - Missing entity:
+Error: "NameError: name 'plane_x' is not defined" in cell definition
+Your action:
+```
+insert_entity(
+    code='plane_x = mcdc.Surface.PlaneX(x=5.0)',
+    entity_type='surface',
+    name='plane_x',
+    before='fuel_cell'  # Place before the cell that uses it
+)
+```
+
+**Example 2** - Broken entity:
+Error: "IndexError: index -632 out of bounds" in mesh tally
+Your action:
+```
+replace_entity(
+    entity_type='mesh',
+    name='fission_mesh',
+    new_code='fission_mesh = mcdc.MeshStructured(x=np.linspace(-10,10,201), z=np.linspace(-5,5,101))'
+    # Omitted y dimension to fix IndexError
+)
+```
+
+**DO NOT**:
+- Suggest rewriting materials, surfaces, or other working entities
+- Mention "helper functions" or "tool conversions"
+- Create duplicate entities
+- Make changes unrelated to the error
+"""
+
+        # --- MAIN DEBUG LOOP ---
+        iteration = 0
+        max_iterations = 5
         
-        if use_auto_run.strip().lower() == 'y':
+        while iteration < max_iterations:
+            iteration += 1
+            self.console.print(f"\n[bold cyan]--- Debug Iteration {iteration}/{max_iterations} ---[/bold cyan]")
+            
+            # --- STEP 1: RUN AND CAPTURE ERROR ---
             with self.console.status("[bold red]Running simulation...[/bold red]"):
-                temp_file = "debug_temp.py"
+                return_code, error_msg = self.run_script()
+            
+            if return_code == 0:
+                self.console.print("[bold green]✓ Script executed successfully! All errors fixed.[/bold green]")
+                return
+            
+            self.console.print(Panel(Syntax(error_msg, "text"), title="Error Traceback", border_style="red"))
+
+            # --- STEP 2: RETRIEVE DOCS ---
+            with self.console.status("[bold blue]Searching documentation...[/bold blue]"):
+                # Extract key error terms for better search
+                error_lines = error_msg.split('\n')
+                search_terms = []
+                for line in error_lines:
+                    if 'Error:' in line or 'Exception:' in line:
+                        search_terms.append(line)
+                search_query = ' '.join(search_terms[-3:]) if search_terms else error_msg[-500:]
+                
+                docs = self.retriever.invoke(search_query)
+                
+                doc_context = ""
+                for i, doc in enumerate(docs[:3]):
+                    source = doc.metadata.get("source", "Unknown")
+                    doc_context += f"[Doc {i+1} - {source}]\n{doc.page_content}\n\n"
+
+            # --- STEP 3: BUILD DEBUG PROMPT ---
+            raw_script = self.builder.get_script(preserve_order=True)
+            script_lines = raw_script.split('\n')
+            numbered_script = "\n".join([f"{i+1:03d} | {line}" for i, line in enumerate(script_lines)])
+
+            # Track state before agent acts
+            script_before = raw_script
+            entities_before = {k: set(v) for k, v in self.builder.defined.items()}
+
+            messages = [{
+                "role": "user",
+                "content": f"""{debug_context}
+
+### CURRENT SCRIPT STATE (Line Numbers Added):
+```python
+{numbered_script}
+```
+
+### ERROR TRACEBACK:
+```
+{error_msg}
+```
+
+### RELEVANT DOCUMENTATION:
+{doc_context}
+
+### YOUR TASK:
+Fix ONLY the specific error shown above. Use manage_script, delete_entity, and create_* tools as needed.
+"""
+            }]
+            
+            # --- STEP 4: AGENT PROCESSES ---
+            with self.console.status("[bold red]Analyzing error and proposing fix...[/bold red]"):
                 try:
-                    # Write current state to temp file
-                    with open(temp_file, "w") as f:
-                        f.write(self.builder.get_script())
-                    
-                    # Run via subprocess to capture stderr safely
-                    result = subprocess.run(
-                        [sys.executable, temp_file],
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if result.returncode != 0:
-                        error_msg = result.stderr
-                        self.console.print(Panel(Syntax(error_msg, "text"), title="Captured Traceback", border_style="red"))
-                    else:
-                        self.console.print("[green]Script ran successfully! No errors found.[/green]")
-                        return 
+                    response = self.agent.invoke({"messages": messages})
+                    output = self._parse_agent_response(response)
                 except Exception as e:
-                    error_msg = str(e)
-                finally:
-                    if os.path.exists(temp_file): 
-                        os.remove(temp_file)
-        
-        # Fallback: Manual Entry
-        if not error_msg:
-            self.console.print("Paste the error message (type END on new line to finish):")
-            lines = []
-            while True:
-                line = self.session.prompt("")
-                if line.strip().upper() == 'END': break
-                lines.append(line)
-            error_msg = "\n".join(lines)
-
-        if not error_msg.strip(): 
-            return
-
-        # --- STEP 2: RETRIEVE CONTEXT ---
-        with self.console.status("[bold blue]Retrieving documentation...[/bold blue]"):
-            # Search using the error message (tail end usually has the specific exception)
-            search_query = error_msg[-300:] 
-            docs = self.retriever.invoke(search_query)
+                    self.console.print(f"[error]Agent error: {e}[/error]")
+                    break
             
-            doc_context = ""
-            for i, doc in enumerate(docs[:3]):
-                doc_context += f"[Excerpt {i+1}]\n{doc.page_content}\n"
-
-        # --- STEP 3: PREPARE PROMPT ---
-        raw_script = self.builder.get_script()
-        script_lines = raw_script.split('\n')
-        # Add line numbers for the LLM
-        numbered_script = "\n".join([f"{i+1:03d} | {line}" for i, line in enumerate(script_lines)])
-
-        system_rules = """
-        You are an expert MCDC (Monte Carlo Dynamic Code) Debugger. 
-        Your goal is to fix the broken script by comparing it and the error message against the Documentation and your Tool Definitions.
-
-        ### DIAGNOSTIC HEURISTICS (Apply in order)
-        1. **Geometry Overlaps/Gaps:** If error mentions "lost particle" or "overlap", check boolean logic in Cell `region`.
-        2. **Material definitions:** If error mentions "cross-section", verify material names match the library.
-        3. **Source/Geometry Mismatch:** If particles die immediately, check if Source `position` is inside a Cell.
-        4. **Parameter Types:** Ensure lists and 2d arrays are used where MCDC expects them.
-        5. **Other Errors:** Many other errors/issues can occur, if the issue doesn't match any of these heuristics, take a close look at all avaliable documentation to correctly diagnose the issue and propose a fix.
-
-        ### RESOURCE PRIORITY
-        1. **Tool Definitions:** Check your available tools (e.g., `create_surface`, `create_material`) to confirm correct parameter names and types.
-        2. **Retrieved Docs:** Use the provided excerpts for conceptual rules.
-        3. **Error Message & Script:** Use the traceback and script to locate the exact line and failure type.
-
-        **If you cannot accurately identify a solution, do not propose one**
-        
-        ### OUTPUT FORMAT
-        1. **The Diagnosis:** A 1-sentence explanation of *what* broke.
-        2. **The Fix:** The exact Python code block to replace the broken part.
-        3. **The Lesson:** A brief tip on how to avoid this.
-
-        ### SAFETY PROTOCOL
-        * **PROPOSE FIRST:** Do not execute any tools (like `manage_script` or `create_...`) in your first response.
-        * **NO IMPORTS:** The script already imports `mcdc` and `numpy as np`. Do not include import statements in your "Fix" code blocks.
-        * **WAIT FOR CONFIRMATION:** Only execute the fix after the user confirms the plan.
-        """
-
-        messages = [{
-            "role": "user",
-            "content": (
-                f"### BROKEN SCRIPT (Line Numbers Added)\n```python\n{numbered_script}\n```\n\n"
-                f"### ERROR TRACEBACK\n```\n{error_msg}\n```\n\n"
-                f"### RETRIEVED DOCUMENTATION\n{doc_context}\n\n"
-                f"### INSTRUCTIONS\n{system_rules}\n"
-            )
-        }]
-
-        # --- STEP 4: RUN AGENT LOOP ---
-        while True:
-            # Snapshot script state before agent acts
-            script_before = self.builder.get_script()
+            # Handle case where agent only called tools without text explanation
+            if not output or not output.strip():
+                script_after = self.builder.get_script(preserve_order=True)
+                if script_before != script_after:
+                    output = "I've applied the fix using the available tools."
+                else:
+                    output = "I couldn't determine a fix for this error."
             
-            with self.console.status("[bold red]Analyzing...[/bold red]"):
-                response = self.agent.invoke({"messages": messages})
-                output = self._parse_agent_response(response)
+            # Display agent's explanation
+            if output:
+                self.console.print(Panel(Markdown(output), title="Debugger Analysis", border_style="red"))
             
-            # Print Agent's textual response
-            self.console.print(Panel(Markdown(output), title="Debugger", border_style="red"))
-            messages.append({"role": "assistant", "content": output})
-
-            # Check if Agent executed a tool that changed the script
-            script_after = self.builder.get_script()
+            # Show what changed
+            script_after = self.builder.get_script(preserve_order=True)
             if script_before != script_after:
                 self.show_diff(script_before, script_after)
-
-            user_reply = self.session.prompt("Reply (or 'exit'): ")
-            if user_reply.lower() in ['no', 'exit', 'quit']: break
+                
+                # Show entity changes
+                for etype, names in self.builder.defined.items():
+                    added = names - entities_before.get(etype, set())
+                    removed = entities_before.get(etype, set()) - names
+                    if added:
+                        self.console.print(f"[green]+ Added {etype}(s): {', '.join(added)}[/green]")
+                    if removed:
+                        self.console.print(f"[red]- Removed {etype}(s): {', '.join(removed)}[/red]")
             
-            messages.append({"role": "user", "content": user_reply})
+            # --- STEP 5: USER DECISION ---
+            # Check if agent made changes
+            changes_made = script_before != script_after
+            
+            if changes_made:
+                prompt_text = "Accept these changes? ('yes' to test, 'no' to revert, 'exit'): "
+            else:
+                prompt_text = "No changes made. ('run' to retry, 'exit' to quit): "
+            
+            user_cmd = self.session.prompt(prompt_text).strip().lower()
+            
+            if user_cmd in ['exit', 'quit', 'q']:
+                break
+            
+            elif user_cmd in ['no', 'n', 'revert']:
+                if changes_made:
+                    # Revert by reloading from script_before
+                    self.console.print("[yellow]Reverting changes...[/yellow]")
+                    # We'd need a way to restore state - for now just warn
+                    self.console.print("[warning]Cannot auto-revert. Use 'undo' from main menu if needed.[/warning]")
+                break
+            
+            elif user_cmd in ['yes', 'y', 'apply', 'run', '']:
+                # Loop back to test the fix
+                continue
+            
+            else:
+                self.console.print(f"[warning]Unknown command: {user_cmd}[/warning]")
+        
+        if iteration >= max_iterations:
+            self.console.print(f"[warning]Reached maximum iterations ({max_iterations}). Exiting debug mode.[/warning]")
+            self.console.print("[dim]You can continue editing from the main menu.[/dim]")
