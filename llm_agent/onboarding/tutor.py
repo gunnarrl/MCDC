@@ -9,6 +9,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 from pathlib import Path
 import subprocess
+import ast
 
 # UI Imports
 from prompt_toolkit import PromptSession
@@ -317,6 +318,7 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
 
     def _handle_view_mode(self):
         while True:
+            # 1. Show Script & Prompt
             self._print_script()
             console.print("[bold]View Mode:[/bold] Press [green]Enter[/green] to return to flow, or type an instruction to edit.")
             command = self.get_input()
@@ -336,47 +338,90 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
                 )
             }]
             
-            while True:
-                try:
-                    with console.status("[bold yellow]Processing edit...", spinner="dots"):
-                        response = self.agent.invoke({"messages": messages})
-                    
-                    output = self._parse_agent_response(response)
+            # 2. Execution Loop (Handles retries and questions)
+            # We loop until the task is marked complete or cancelled
+            task_complete = False
+            
+            while not task_complete:
+                
+                # 3. Attempt Loop (Handles "laziness" where agent doesn't act)
+                for attempt in range(3):
+                    try:
+                        with console.status("[bold yellow]Processing edit...", spinner="dots"):
+                            # Snapshot before execution
+                            script_before = self.builder.get_script()
+                            response = self.agent.invoke({"messages": messages})
+                            script_after = self.builder.get_script()
+                        
+                        output = self._parse_agent_response(response)
+                        if not output or not output.strip():
+                            output = "(No text response provided by Agent)"
 
-                    # --- ADDED SAFETY CHECK ---
-                    if not output or not output.strip():
-                        output = "(No text response provided by Agent. It may have executed a tool silently.)"
-                    # --------------------------
+                        # Check outcomes
+                        script_changed = (script_before != script_after)
+                        
+                        clarification_phrases = [
+                            "should that be", "what", "which", "i suggest", "i recommend", 
+                            "does this look correct", "would you like", "do you want", 
+                            "can you confirm", "how about", "unable to", "cannot create", 
+                            "please specify", "?", "propose", "intend to", "clarify", "confirm"
+                        ]
+                        is_question = any(phrase in output.lower() for phrase in clarification_phrases)
 
-                    console.print(Panel(Markdown(output), title="Agent", border_style="green"))
-                    
-                    clarification_phrases = [
-                        "should that be", "what", "which",
-                        "i suggest", "i recommend", "does this look correct", 
-                        "would you like", "do you want", "can you confirm",
-                        "how about", "already exists", "already defined", 
-                        "different name", "unable to", "cannot create", 
-                        "please specify", "please provide", "?",
-                        "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
-                    ]
-                    
-                    # If the Agent asked a question OR if we caught an empty response (silent execution),
-                    # we usually want to break back to the main loop to show the updated script.
-                    # But if it's a clarification, we stay in the loop.
-                    
-                    if any(phrase in output.lower() for phrase in clarification_phrases):
-                        user_reply = self.get_input("Response (or Enter to cancel):")
-                        if not user_reply:
-                            console.print("Edit cancelled.")
+                        # --- SCENARIO A: SUCCESS (Script Changed) ---
+                        if script_changed:
+                            self.builder.reorder()
+                            
+                            new_code = self.builder.get_code_by_type(step)
+                            
+                            console.print(Panel(Markdown(output), title="Agent (Executed)", border_style="green"))
+                            console.print(f"\n[bold]Current {step.upper()} definitions:[/bold]")
+                            console.print(Syntax(new_code, "python", theme="monokai"))
+                            
+                            consecutive_errors = 0
                             break
-                        messages.append({"role": "assistant", "content": output})
-                        messages.append({"role": "user", "content": user_reply})
-                        continue 
-                    break
-                    
-                except Exception as e:
-                    console.print(f"[error]Error: {e}[/error]")
-                    break
+
+                        # --- SCENARIO B: QUESTION (Agent needs info) ---
+                        if is_question:
+                            console.print(Panel(Markdown(output), title="Agent (Question)", border_style="blue"))
+                            user_reply = self.get_input("Response (or Enter to cancel):")
+                            
+                            if not user_reply:
+                                console.print("Edit cancelled.")
+                                task_complete = True
+                                break # Cancel task
+                            
+                            # Add interaction to history
+                            messages.append({"role": "assistant", "content": output})
+                            
+                            # Inject force-execute instruction if confirmed
+                            confirmation_keywords = ['yes', 'y', 'ok', 'okay', 'sure', 'correct', 'go ahead']
+                            if user_reply.strip().lower() in confirmation_keywords:
+                                user_reply += " (SYSTEM: The user confirmed. EXECUTE the required tool calls IMMEDIATELY.)"
+                                
+                            messages.append({"role": "user", "content": user_reply})
+                            break 
+
+                        # --- SCENARIO C: FAILURE (No Change, No Question) ---
+                        # The agent probably just talked without acting. Force retry.
+                        if attempt < 2:
+                            console.print(f"[dim red]System: Agent returned text but did not execute tools. Retrying ({attempt+1}/3)...[/dim red]")
+                            messages.append({"role": "assistant", "content": output})
+                            messages.append({
+                                "role": "user", 
+                                "content": "SYSTEM ERROR: You responded with text but DID NOT execute any tools. The script has NOT changed. You must CALL the functions (e.g., create_surface, replace_entity) to perform the task."
+                            })
+                            continue # Next attempt
+                        else:
+                            console.print(Panel(Markdown(output), title="Agent (Failed)", border_style="red"))
+                            console.print("[error]Agent failed to execute tools after multiple attempts.[/error]")
+                            task_complete = True
+                            break
+
+                    except Exception as e:
+                        console.print(f"[error]Error: {e}[/error]")
+                        task_complete = True
+                        break
 
     def run_visualization(self, axis: str = 'z', position: float = 0.0):
         """
@@ -384,32 +429,29 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
         - Extracts 'region' strings directly from ScriptBuilder history.
         - Supports slicing along X, Y, or Z axis.
         """
-        import re
-        
-        # 1. Extract Cell Logic Strings
+
         cell_logic_map = {}
         has_cells = False
         
         for entry in self.builder.entries:
             if entry['type'] == 'cell':
                 has_cells = True
-                code = entry['code']
-                
-                # Robust extraction that handles nested parentheses
-                if "region=" in code:
-                    # 1. Start reading after 'region='
-                    start_idx = code.find("region=") + len("region=")
-                    remainder = code[start_idx:]
-                    
-                    # 2. Find the end of the region argument
-                    # We assume the next argument is 'fill=', which is standard in your script
-                    if ", fill=" in remainder:
-                        region_str = remainder.split(", fill=")[0]
-                    else:
-                        # Fallback: If fill isn't there, take everything up to the last closing paren
-                        region_str = remainder.rsplit(")", 1)[0]
-                    
-                    cell_logic_map[entry['name']] = region_str.strip()
+                try:
+
+                    tree = ast.parse(entry['code'])
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Call):
+                            
+                            for keyword in node.keywords:
+                                if keyword.arg == 'region':
+
+                                    # Extract the source text for the region value
+                                    region_str = ast.get_source_segment(entry['code'], keyword.value)
+                                    cell_logic_map[entry['name']] = region_str
+                                    break
+
+                except Exception as e:
+                    print(f"Warning: Could not parse region for cell {entry['name']}: {e}")
 
         # MODE A: SLICE SCANNER (Dynamic Axis)
         slice_code = f"""
@@ -593,7 +635,8 @@ except Exception as e:
         plot_code = slice_code if has_cells else wireframe_code
         
         viz_file = "temp_viz_script.py"
-        full_script = base_script + plot_code
+        base_script = self.builder.get_script(include_run=False)
+        full_script = base_script + "\n" + plot_code
         Path(viz_file).write_text(full_script)
         
         try:
@@ -718,6 +761,13 @@ except Exception as e:
                             break 
                         
                         messages.append({"role": "assistant", "content": output})
+                        
+                        # if the user confirms, give a system instruction to execute tools
+                        confirmation_keywords = ['yes', 'y', 'ok', 'okay', 'sure', 'correct', 'go ahead', 'proceed', 'continue']
+                        if user_reply.strip().lower() in confirmation_keywords:
+                            user_reply += " (SYSTEM INSTRUCTION: The user confirmed the plan. EXECUTE the required tool calls IMMEDIATELY. Do not wait.)"
+                        
+
                         messages.append({"role": "user", "content": user_reply})
                         continue 
                     else:

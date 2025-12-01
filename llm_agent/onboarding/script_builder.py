@@ -1,6 +1,7 @@
 from typing import List, Dict, Set
 from pathlib import Path
 import ast
+from collections import defaultdict, deque
 
 class ScriptBuilder:
     """
@@ -92,6 +93,76 @@ class ScriptBuilder:
             
         return "\n".join(lines)
     
+    def reorder(self):
+        """
+        Topologically sorts the script entries based on variable dependencies.
+        Ensures that if 'A' uses 'B', 'B' is defined before 'A'.
+        """
+        # 1. Map Names to Indices
+        name_to_idx = {entry['name']: i for i, entry in enumerate(self.entries)}
+        
+        # 2. Build Dependency Graph
+        # Graph: A -> B means A must come BEFORE B
+        adj = defaultdict(set)
+        in_degree = defaultdict(int)
+        
+        # Initialize in_degree for all indices
+        for i in range(len(self.entries)):
+            in_degree[i] = 0
+
+        for i, entry in enumerate(self.entries):
+            # Parse the code to find what variables it references
+            try:
+                tree = ast.parse(entry['code'])
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                        referenced_var = node.id
+                        
+                        # If this entry references another entity we track
+                        if referenced_var in name_to_idx:
+                            dep_idx = name_to_idx[referenced_var]
+                            
+                            # Self-references don't count (e.g. x = x + 1)
+                            if dep_idx != i:
+                                # dep_idx MUST precede i. Edge: dep -> i
+                                if i not in adj[dep_idx]:
+                                    adj[dep_idx].add(i)
+                                    in_degree[i] += 1
+            except Exception:
+                continue
+
+        # 3. Kahn's Algorithm for Topological Sort
+        queue = deque()
+        # Find all nodes with no dependencies (can be first)
+        for i in range(len(self.entries)):
+            if in_degree[i] == 0:
+                queue.append(i)
+        
+        sorted_indices = []
+        while queue:
+            # Pop from left to preserve original stability for independent items
+            u = queue.popleft()
+            sorted_indices.append(u)
+            
+            # Use sorted iteration to ensure deterministic output
+            for v in sorted(list(adj[u])):
+                in_degree[v] -= 1
+                if in_degree[v] == 0:
+                    queue.append(v)
+        
+        # 4. Cycle Handling / Fallback
+        # If we didn't visit everything, there is a cycle or graph error.
+        # Just append the missing items in their original order.
+        if len(sorted_indices) < len(self.entries):
+            seen = set(sorted_indices)
+            for i in range(len(self.entries)):
+                if i not in seen:
+                    sorted_indices.append(i)
+
+        # 5. Apply Reordering
+        self.entries = [self.entries[i] for i in sorted_indices]
+        return True
+        
     def parse_and_load(self, filepath: str) -> str:
         """
         Parses an existing Python file and populates the ScriptBuilder state.
