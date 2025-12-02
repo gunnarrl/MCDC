@@ -1,6 +1,7 @@
 from typing import List, Dict, Set
 from pathlib import Path
 import ast
+import re
 from collections import defaultdict, deque
 
 class ScriptBuilder:
@@ -39,130 +40,183 @@ class ScriptBuilder:
             self.defined[entity_type] = set()
             
         self.defined[entity_type].add(name)
-    
-    def get_script(self, include_run: bool = True, preserve_order: bool = True) -> str:
-        """
-        Reconstructs the script.
         
-        Args:
-            include_run: Whether to append mcdc.run() at the end
-            preserve_order: If True, outputs entries in insertion order (best for complex scripts).
-                           If False, groups by type (materials, surfaces, cells, etc.)
-        """
-        lines = list(self.imports)
-        lines.append("") 
-        
-        if preserve_order:
-            # INSERTION ORDER - respects dependencies
-            for entry in self.entries:
-                lines.append(entry['code'])
-        else:
-            # TYPE-BASED GROUPING - may break dependencies
-            order = [
-                "material", 
-                "surface", 
-                "cell", 
-                "universe", 
-                "lattice",
-                "mesh",  # MUST come before tallies that reference them
-                "source", 
-                "tally", 
-                "settings" 
-            ]
-            
-            for section in order:
-                section_entries = [e for e in self.entries if e['type'] == section]
-                
-                if section_entries:
-                    lines.append(f"# === {section.upper()} DEFINITIONS ===")
-                    for entry in section_entries:
-                        lines.append(entry['code'])
-                    lines.append("") 
-
-            # everything else
-            others = [e for e in self.entries if e['type'] not in order]
-            if others:
-                lines.append("# === OTHER ===")
-                for entry in others:
-                    lines.append(entry['code'])
-                lines.append("")
-
-        if include_run:
-            lines.append("# === RUN ===")
-            lines.append("mcdc.run()")
-            
-        return "\n".join(lines)
+        # Auto-sort to fix dependencies and grouping
+        self.reorder()
     
     def reorder(self):
         """
         Topologically sorts the script entries based on variable dependencies.
-        Ensures that if 'A' uses 'B', 'B' is defined before 'A'.
-        """
-        # 1. Map Names to Indices
-        name_to_idx = {entry['name']: i for i, entry in enumerate(self.entries)}
         
-        # 2. Build Dependency Graph
-        # Graph: A -> B means A must come BEFORE B
+        Updates:
+        1. Ensures 'settings' always appear at the bottom.
+        2. Parses 'region' strings to find hidden dependencies.
+        3. Bubbles up commented entries to the top of their type-block.
+        """
+        # Separate 'settings' from the rest
+        free_entries = []
+        graph_entries = []
+        
+        for entry in self.entries:
+            if entry['type'] == 'settings' or entry['type'] == 'source':
+                free_entries.append(entry)
+            else:
+                graph_entries.append(entry)
+
+        # Map Names to Indices (relative to graph_entries)
+        name_to_idx = {entry['name']: i for i, entry in enumerate(graph_entries)}
+        
+        # Build Dependency Graph
         adj = defaultdict(set)
         in_degree = defaultdict(int)
         
-        # Initialize in_degree for all indices
-        for i in range(len(self.entries)):
-            in_degree[i] = 0
+        def add_dependency(u, v):
+            """u depends on v (v must come before u)"""
+            if v != u and u not in adj[v]:
+                adj[v].add(u)
+                in_degree[u] += 1
 
-        for i, entry in enumerate(self.entries):
-            # Parse the code to find what variables it references
+        for i, entry in enumerate(graph_entries):
+            # AST parsing for direct variable usage
             try:
                 tree = ast.parse(entry['code'])
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                        referenced_var = node.id
-                        
-                        # If this entry references another entity we track
-                        if referenced_var in name_to_idx:
-                            dep_idx = name_to_idx[referenced_var]
-                            
-                            # Self-references don't count (e.g. x = x + 1)
-                            if dep_idx != i:
-                                # dep_idx MUST precede i. Edge: dep -> i
-                                if i not in adj[dep_idx]:
-                                    adj[dep_idx].add(i)
-                                    in_degree[i] += 1
+                        ref = node.id
+                        if ref in name_to_idx:
+                            add_dependency(i, name_to_idx[ref])
             except Exception:
                 continue
 
-        # 3. Kahn's Algorithm for Topological Sort
+        # Kahn's Algorithm
         queue = deque()
-        # Find all nodes with no dependencies (can be first)
-        for i in range(len(self.entries)):
+        for i in range(len(graph_entries)):
             if in_degree[i] == 0:
                 queue.append(i)
         
         sorted_indices = []
         while queue:
-            # Pop from left to preserve original stability for independent items
             u = queue.popleft()
             sorted_indices.append(u)
             
-            # Use sorted iteration to ensure deterministic output
+            # Sort neighbors for deterministic output
             for v in sorted(list(adj[u])):
                 in_degree[v] -= 1
                 if in_degree[v] == 0:
                     queue.append(v)
         
-        # 4. Cycle Handling / Fallback
-        # If we didn't visit everything, there is a cycle or graph error.
-        # Just append the missing items in their original order.
-        if len(sorted_indices) < len(self.entries):
+        # Cycle/Error handling
+        if len(sorted_indices) < len(graph_entries):
             seen = set(sorted_indices)
-            for i in range(len(self.entries)):
+            for i in range(len(graph_entries)):
                 if i not in seen:
                     sorted_indices.append(i)
 
-        # 5. Apply Reordering
-        self.entries = [self.entries[i] for i in sorted_indices]
-        return True
+        # Construct Preliminary List
+        new_entries = [graph_entries[i] for i in sorted_indices]
         
+        # Post-Processing: Bubble Up Commented Entries
+        # Re-map names to NEW indices for fast dependency checking
+        new_name_to_idx = {e['name']: i for i, e in enumerate(new_entries)}
+        
+        def depends(idx_a, idx_b):
+            """Returns True if entry at new index A depends on entry at new index B"""
+            # Check original graph using names
+            name_a = new_entries[idx_a]['name']
+            name_b = new_entries[idx_b]['name']
+            
+            # Map back to original indices to check 'adj'
+            orig_a = name_to_idx[name_a]
+            orig_b = name_to_idx[name_b]
+            
+            # Since we only swap adjacent items, we just need to check if A depends on B directly or indirectly.
+            # But 'adj' stores direct edges: adj[b] contains a if a depends on b.
+            return orig_a in adj[orig_b]
+
+        for i in range(len(new_entries)):
+            # Check if this entry has a comment (header)
+            if new_entries[i]['code'].strip().startswith("#"):
+                
+                # Bubble up
+                curr = i
+                while curr > 0:
+                    prev = curr - 1
+                    curr_ent = new_entries[curr]
+                    prev_ent = new_entries[prev]
+                    
+                    # Stop if different type
+                    if curr_ent['type'] != prev_ent['type']:
+                        break
+                        
+                    # Stop if previous one also has a comment (don't reorder headers)
+                    if prev_ent['code'].strip().startswith("#"):
+                        break
+                        
+                    # Stop if dependency exists (Current depends on Previous)
+                    if depends(curr, prev):
+                        break
+                        
+                    # SWAP
+                    new_entries[prev], new_entries[curr] = new_entries[curr], new_entries[prev]
+                    
+                    # Update map for next iteration (swapped indices)
+                    # (Actually we don't need to update map if we look up by name every time)
+                    curr -= 1
+
+        # append remaining
+        new_entries.extend(free_entries)
+        
+        self.entries = new_entries
+        return True
+    
+    def get_script(self, include_run: bool = True, preserve_order: bool = True) -> str:
+        """
+        Reconstructs the script.
+        """
+        lines = list(self.imports)
+        lines.append("") 
+        
+        last_type = None
+
+        if preserve_order:
+            # INSERTION ORDER
+            for entry in self.entries:
+                # Add a blank line if switching types
+                current_type = entry['type']
+                if last_type and current_type != last_type:
+                    geo_types = ['surface', 'cell', 'universe', 'lattice']
+                    if not (current_type in geo_types and last_type in geo_types):
+                        lines.append("") 
+                
+                lines.append(entry['code'])
+                last_type = current_type
+        else:
+            # TYPE-BASED GROUPING (Legacy/Fallback)
+            order = [
+                "material", "surface", "cell", "universe", 
+                "lattice", "mesh", "source", "tally", "settings" 
+            ]
+            for section in order:
+                section_entries = [e for e in self.entries if e['type'] == section]
+                if section_entries:
+                    lines.append(f"# === {section.upper()} DEFINITIONS ===")
+                    for entry in section_entries:
+                        lines.append(entry['code'])
+                    lines.append("") 
+            
+            others = [e for e in self.entries if e['type'] not in order]
+            if others:
+                lines.append("# === OTHER ===")
+                for entry in others:
+                    lines.append(entry['code'])
+
+        if include_run:
+            lines.append("")
+            lines.append("# === RUN ===")
+            lines.append("mcdc.run()")
+            
+        return "\n".join(lines)
+    
     def parse_and_load(self, filepath: str) -> str:
         """
         Parses an existing Python file and populates the ScriptBuilder state.
@@ -199,14 +253,14 @@ class ScriptBuilder:
         count = 0
         
         for node in tree.body:
-            # 1. Handle Imports (Keep standard ones, ignore duplicates)
+            # Handle Imports 
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 code = get_segment(node)
                 if code not in self.imports:
                     self.imports.append(code)
                 continue
 
-            # 2. Handle Assignments (e.g., m1 = mcdc.Material(...))
+            # Handle Assignments (m1 = mcdc.Material(...))
             if isinstance(node, ast.Assign):
                 # We assume single assignment for MCDC entities (m1 = ...)
                 target = node.targets[0]
@@ -243,7 +297,7 @@ class ScriptBuilder:
                         count += 1
                         continue
 
-            # 3. Handle Standalone Expressions (e.g., mcdc.Source(...) without assignment)
+            # Handle Standalone Expressions (e.g., mcdc.Source(...) without assignment)
             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
                 # Similar logic to assignments, but name is generic
                 if isinstance(node.value.func, ast.Attribute):
@@ -255,7 +309,7 @@ class ScriptBuilder:
                     if "run" in attr_name:
                         continue
 
-            # 4. Fallback: Add everything else as 'other' (comments, math, etc)
+            # Add everything else as 'other' (comments, math, etc)
             code_segment = get_segment(node)
             if code_segment and "mcdc.run" not in code_segment:
                 self.add_line(code_segment, "other", "generic_code")
@@ -303,6 +357,7 @@ class ScriptBuilder:
         for entry in self.entries:
             if entry['code'].strip() == old_code.strip():
                 entry['code'] = new_code
+                self.reorder()
                 return True
         return False
     
@@ -315,6 +370,7 @@ class ScriptBuilder:
         for entry in self.entries:
             if entry['type'] == entity_type and entry['name'] == name:
                 entry['code'] = new_code
+                self.reorder()
                 return True
         return False
     
@@ -322,19 +378,7 @@ class ScriptBuilder:
                      before: str = None, after: str = None, position: int = None) -> bool:
         """
         Insert a new entity at a specific position in the script.
-        
-        Args:
-            code: The Python code to insert
-            entity_type: Type of entity ('material', 'surface', 'cell', etc.)
-            name: Variable name for the entity
-            before: Name of entity to insert before (optional)
-            after: Name of entity to insert after (optional)
-            position: Exact index to insert at (optional)
-        
-        Priority: position > before > after > append to end
-        Returns True if successful
         """
-        # Check if entity already exists
         if self.has_entity(entity_type, name):
             return False
         
@@ -344,52 +388,39 @@ class ScriptBuilder:
             'name': name
         }
         
-        # Determine insertion point
         insert_idx = None
-        
         if position is not None:
-            # Direct index insertion
             insert_idx = max(0, min(position, len(self.entries)))
-        
         elif before:
-            # Find the entity to insert before
             for idx, entry in enumerate(self.entries):
                 if entry['name'] == before:
                     insert_idx = idx
                     break
-        
         elif after:
-            # Find the entity to insert after
             for idx, entry in enumerate(self.entries):
                 if entry['name'] == after:
                     insert_idx = idx + 1
                     break
         
-        # Insert or append
         if insert_idx is not None:
             self.entries.insert(insert_idx, new_entry)
         else:
             self.entries.append(new_entry)
         
-        # Register in defined set
         if entity_type not in self.defined:
             self.defined[entity_type] = set()
         self.defined[entity_type].add(name)
         
+        self.reorder()
         return True
     
     def find_entity_index(self, entity_type: str, name: str) -> int:
-        """
-        Find the index of an entity in the entries list.
-        Returns -1 if not found.
-        """
         for idx, entry in enumerate(self.entries):
             if entry['type'] == entity_type and entry['name'] == name:
                 return idx
         return -1
     
     def get_code_by_type(self, entity_type: str) -> str:
-        """Get the code for all entities of a specific type."""
         lines = [e['code'] for e in self.entries if e['type'] == entity_type]
         if not lines:
             return "No entries defined."

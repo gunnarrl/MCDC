@@ -299,12 +299,24 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         - Sphere: {'center': [x, y, z], 'radius': float}
         - Quadric: {'A':.., 'B':.., ... 'J':..}
         
-        Boundary Condition (bc): 'interface' (default), 'vacuum', or 'reflective'.
+        Boundary Condition (boundary_condition): 'interface' (default), 'vacuum', or 'reflective'.
         """
         if builder.has_entity("surface", name): return f"ERROR: Surface '{name}' already defined."
         
         try:
             p = json.loads(params)
+
+            # LLMs sometimes confuse where to put this argument or what to call it.
+            bc_val = p.pop('bc', None)
+            full_bc_val = p.pop('boundary_condition', None)
+            
+            # Determine actual BC (Override function arg if present in JSON)
+            final_bc = boundary_condition
+            if full_bc_val: 
+                final_bc = full_bc_val
+            elif bc_val: 
+                final_bc = bc_val
+
             # Build args string
             args = []
             for k, v in p.items():
@@ -354,7 +366,11 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             p = json.loads(params)
             args = []
             
-            if type_ == 'universe' and p.get('root', False) is True:
+            is_root = p.get('root', False)
+            if isinstance(is_root, str):
+                is_root = is_root.lower() == 'true'
+
+            if type_ == 'universe' and is_root:
                 cells = p.get('cells', [])
                 # Ensure cells are formatted as a list string
                 cells_str = str(cells).replace("'", "").replace('"', "")
@@ -369,10 +385,12 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             
             for k, v in p.items():
                 if k == 'root': continue # already dealt with this
-                val = str(v)
-                
+
+                if k in ['region', 'fill', 'cell', 'surface']:
+                    val = str(v).strip("'").strip('"')
                 # mesh handling: convert lists to np.array or tuples
-                if is_mesh and (k in ['x', 'y', 'z', 't']):
+                elif is_mesh and (k in ['x', 'y', 'z', 't']):
+                    val = str(v)
                     # User provided a numpy string (e.g. "np.linspace(0,10,5)")
                     if "np." in val or "numpy" in val:
                         force_structured = True
