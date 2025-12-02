@@ -167,10 +167,6 @@ class CreateGeometryArgs(BaseModel):
     params: str = Field(..., description="JSON string of parameters specific to the entity type")
     description: Optional[str] = Field(None, description="Optional comment/description")
 
-class SetRootUniverseArgs(BaseModel):
-    cells: List[str] = Field(..., description="List of cell names to include in the root universe")
-    description: Optional[str] = Field(None, description="Optional comment")
-
 class CreateSourceArgs(BaseModel):
     name: str = Field("source", description="Internal identifier for the source")
     params: str = Field(..., description="JSON string of parameters: position, direction, energy, time, probability, etc.")
@@ -358,11 +354,21 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             p = json.loads(params)
             args = []
             
+            if type_ == 'universe' and p.get('root', False) is True:
+                cells = p.get('cells', [])
+                # Ensure cells are formatted as a list string
+                cells_str = str(cells).replace("'", "").replace('"', "")
+                code = f"mcdc.simulation.set_root_universe(cells={cells_str})"
+                # We use a static name key for the builder to track that root is set
+                _add_code(code, "universe", "root_universe", description)
+                return "Set simulation root universe."
+
             # Detect Mesh Type
             is_mesh = "mesh" in type_.lower()
             force_structured = "structured" in type_.lower()
             
             for k, v in p.items():
+                if k == 'root': continue # already dealt with this
                 val = str(v)
                 
                 # mesh handling: convert lists to np.array or tuples
@@ -409,17 +415,6 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             return f"Created {cls_name} '{name}'"
         except Exception as e:
             return f"ERROR: {e}"
-
-    @tool(args_schema=SetRootUniverseArgs)
-    def set_root_universe(cells: List[str], description: Optional[str] = None) -> str:
-        """Sets the root universe for the simulation (mcdc.simulation.set_root_universe)."""
-        
-        # Format the list of cells as a Python list string
-        cell_list_str = "[" + ", ".join(cells) + "]"
-        
-        code = f"mcdc.simulation.set_root_universe(cells={cell_list_str})"
-        builder.add_line(code, "universe", "root_universe")
-        return "Set root universe."
 
     @tool(args_schema=CreateSourceArgs)
     def create_source(params: str, name: str = "source", description: Optional[str] = None) -> str:
