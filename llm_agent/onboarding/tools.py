@@ -365,6 +365,8 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         try:
             p = json.loads(params)
             args = []
+
+            type_key = type_.lower()    
             
             is_root = p.get('root', False)
             if isinstance(is_root, str):
@@ -384,7 +386,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
             force_structured = "structured" in type_.lower()
             
             for k, v in p.items():
-                if k == 'root': continue # already dealt with this
+                if k.lower() == 'root': continue # already dealt with this, but just in case
 
                 if k in ['region', 'fill', 'cell', 'surface']:
                     val = str(v).strip("'").strip('"')
@@ -610,7 +612,7 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
         - after='entity_name' - Insert after this entity
         - Neither - Appends to end (not recommended for fixing errors)
         
-        **Example 1**: Cell uses undefined surface
+        **Example**: Cell uses undefined surface
         Error: "NameError: name 'plane_x' is not defined"
         Solution:
             insert_entity(
@@ -618,16 +620,6 @@ def get_mcdc_tools(builder: ScriptBuilder, retriever: Any):
                 entity_type='surface',
                 name='plane_x',
                 before='fuel_cell'  # Insert before the cell that uses it
-            )
-        
-        **Example 2**: Tally uses undefined mesh
-        Error: "NameError: name 'flux_mesh' is not defined"
-        Solution:
-            insert_entity(
-                code='flux_mesh = mcdc.MeshUniform(x=(0, 10, 50), y=(0, 10, 50), z=(0, 10, 50))',
-                entity_type='mesh',
-                name='flux_mesh',
-                before='flux_tally'  # Insert before the tally
             )
         """
         if builder.has_entity(entity_type, name):

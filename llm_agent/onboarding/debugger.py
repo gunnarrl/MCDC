@@ -160,32 +160,6 @@ Your ONLY job is to FIX THE SPECIFIC ERROR shown in the traceback.
    - **Wrong order**: `delete_entity()` then `create_*()` (moves to end)
 4. Explain briefly what you fixed
 
-**EXAMPLES**:
-
-**Example 1** - Missing entity:
-Error: "NameError: name 'plane_x' is not defined" in cell definition
-Your action:
-```
-insert_entity(
-    code='plane_x = mcdc.Surface.PlaneX(x=5.0)',
-    entity_type='surface',
-    name='plane_x',
-    before='fuel_cell'  # Place before the cell that uses it
-)
-```
-
-**Example 2** - Broken entity:
-Error: "IndexError: index -632 out of bounds" in mesh tally
-Your action:
-```
-replace_entity(
-    entity_type='mesh',
-    name='fission_mesh',
-    new_code='fission_mesh = mcdc.MeshStructured(x=np.linspace(-10,10,201), z=np.linspace(-5,5,101))'
-    # Omitted y dimension to fix IndexError
-)
-```
-
 **DO NOT**:
 - Suggest rewriting materials, surfaces, or other working entities
 - Mention "helper functions" or "tool conversions"
@@ -241,7 +215,7 @@ replace_entity(
                 "role": "user",
                 "content": f"""{debug_context}
 
-### CURRENT SCRIPT STATE (Line Numbers Added):
+### CURRENT SCRIPT STATE:
 ```python
 {numbered_script}
 ```
@@ -255,7 +229,7 @@ replace_entity(
 {doc_context}
 
 ### YOUR TASK:
-Fix ONLY the specific error shown above. Use manage_script, delete_entity, and create_* tools as needed.
+Fix ONLY the specific error shown above. Use manage_script, insert_entity, and create_* tools as needed.
 """
             }]
             

@@ -106,7 +106,7 @@ Answer:"""
 ---
 ### PROTOCOL FOR MODIFICATIONS
 If the user asks to "delete", "change", "update", or "fix" an existing entity:
-1.  Call `manage_script(action='delete', ...)` to remove the old version.
+1.  Call `manage_script(action='delete', ...)` to remove the old version. Or insert/replace_entity() if needed.
 2.  If changing an entity, confirm the new plan with the user.
 3.  Call the appropriate creation tool to define the new entity.
 
@@ -120,6 +120,8 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
 ### TOOL USAGE GUIDELINES
 **1. Creating Materials (`create_material`)**
 * **Mode 'MG' (Multi-Group):** [DEFAULT] Pass arrays as lists: `{"capture": [0.1]}`.
+    * If the user does not provide explicit cross sections, use standard values for the type of material.
+    * DO NOT DEFINE speed PARAMETER UNLESS ASKED, IF A PARAMETER WILL HAVE A VALUE OF 0.0, DO NOT PROVIDE IT, THAT IS THE DEFAULT VALUE
 * **Mode 'CE' (Continuous Energy):** [Use only if user explicitly asks] Use for specific isotopes.
     * Pass dictionary in `properties`: `{"nuclide_composition": {"U235": 0.7}}`.
 * **Mode 'formula':** [Use if user asks for CE and provides a compound material like water, stainless steel, etc.] Use for chemical formulas (e.g., "H2O", "UO2").
@@ -129,6 +131,8 @@ If the user requests a task that requires defining multiple entities (e.g., "fin
 * Use `create_surface` for Planes, Cylinders, Spheres.
 * Use `create_geometry` for **Cells**, **Universes**, **Lattices**, or **Meshes**.
     * Cell Example: `type_='cell', params='{"region": "+s1 & -s2", "fill": "fuel"}'`.
+    ** BOOLEAN GEOMETRY RULES ** - '+' means outside the sphere/cylinder, or the side of the plane with larger values, '-' is the opposite
+    * DO NOT use a cell in the region example: not_fuel_cell = mcdc.Cell(region=(-sphere & ~fuel_cell), fill=m1) where 'fuel_cell' is a cell
 * **np.linspace rule**: Use **N+1 points** for **N intervals**.
 
 **3. Creating Tallies (`create_tally`)**
@@ -596,7 +600,8 @@ def run_wireframe_viz(local_vars):
                     val = -J/H; ax.plot_surface(U, np.full_like(U, val), V, alpha=0.2, color='green')
                 found += 1
 
-            elif abs(C) < 1e-9 and abs(A-B) < 1e-5 and abs(A) > 1e-9: # Cylinder Z
+            # --- CYLINDER Z ---
+            elif abs(C) < 1e-9 and abs(A-B) < 1e-5 and abs(A) > 1e-9: 
                 x0, y0 = -G/(2*A), -H/(2*B)
                 r = math.sqrt(max(0, x0**2 + y0**2 - J/A))
                 z = np.linspace(-BOUNDS, BOUNDS, RES)
@@ -605,6 +610,30 @@ def run_wireframe_viz(local_vars):
                 Xg = r * np.cos(TH) + x0
                 Yg = r * np.sin(TH) + y0
                 ax.plot_surface(Xg, Yg, Z, alpha=0.3, color='cyan')
+                found += 1
+
+            # --- CYLINDER X ---
+            elif abs(A) < 1e-9 and abs(B-C) < 1e-5 and abs(B) > 1e-9:
+                y0, z0 = -H/(2*B), -I/(2*C)
+                r = math.sqrt(max(0, y0**2 + z0**2 - J/B))
+                x = np.linspace(-BOUNDS, BOUNDS, RES)
+                th = np.linspace(0, 2*np.pi, RES)
+                Xg, TH = np.meshgrid(x, th)
+                Yg = r * np.cos(TH) + y0
+                Zg = r * np.sin(TH) + z0
+                ax.plot_surface(Xg, Yg, Zg, alpha=0.3, color='orange')
+                found += 1
+
+            # --- CYLINDER Y---
+            elif abs(B) < 1e-9 and abs(A-C) < 1e-5 and abs(A) > 1e-9:
+                x0, z0 = -G/(2*A), -I/(2*C)
+                r = math.sqrt(max(0, x0**2 + z0**2 - J/A))
+                y = np.linspace(-BOUNDS, BOUNDS, RES)
+                th = np.linspace(0, 2*np.pi, RES)
+                Yg, TH = np.meshgrid(y, th)
+                Xg = r * np.cos(TH) + x0
+                Zg = r * np.sin(TH) + z0
+                ax.plot_surface(Xg, Yg, Zg, alpha=0.3, color='yellow')
                 found += 1
 
             elif abs(A-B) < 1e-5 and abs(A-C) < 1e-5 and abs(A) > 1e-9: # Sphere
@@ -652,10 +681,8 @@ except Exception as e:
         console.print("\n")
         console.rule(f"[bold]CREATE YOUR {step.upper()}[/bold]")
         
-        consecutive_errors = 0  
-        max_consecutive_errors = 3 
-
         while True:
+            # 1. Get User Input
             prompt_text = f"Describe {step}(s) to add, 'view' to edit, or 'viz' to plot"
             if step == "surface": prompt_text += " (e.g., 'sphere radius 5')"
             elif step == "material": prompt_text += " (e.g., 'water')"
@@ -666,29 +693,20 @@ except Exception as e:
                 console.print(f"[success]Finished defining {step}s.[/success]")
                 break
             
+            # --- Handle Special Commands (Viz, View, Undo) ---
             if goal.lower().startswith("viz"):
                 # Check if we are doing 2D Slicing (Cells exist) or 3D Wireframe
                 has_cells = len(self.builder.defined.get('cell', set())) > 0
-                
-                # Default defaults
-                viz_axis = 'z'
-                viz_pos = 0.0
+                viz_axis = 'z'; viz_pos = 0.0
 
                 if has_cells:
-                    # Prompt user for slice details
                     slice_input = self.get_input("Enter slice (e.g., 'z=5', 'y=0') [Default: z=0]:")
-                    
                     if slice_input:
                         import re
-                        # Regex to capture 'x', 'y', or 'z' and the number
                         match = re.search(r"([xyz])\s*=?\s*([-\d.]+)", slice_input.lower())
                         if match:
-                            viz_axis = match.group(1)
-                            viz_pos = float(match.group(2))
-                        else:
-                            console.print("[warning]Could not parse input. Using default Z=0.[/warning]")
+                            viz_axis, viz_pos = match.group(1), float(match.group(2))
 
-                # Pass these values to the visualizer
                 self.run_visualization(axis=viz_axis, position=viz_pos)
                 continue
 
@@ -701,85 +719,112 @@ except Exception as e:
                 console.print(f"[warning]{result}[/warning]")
                 continue
 
-            start_count = len(self.builder.defined.get(step, set()))
+            # 2. Setup Agent Context
             current_context = self.builder.get_script()
-            
             messages = [{
                 "role": "user", 
                 "content": (
                     f"Here is the current MCDC script:\n```python\n{current_context}\n```\n\n"
-                    f"TASK: Create a {step}(s) based on this description: {goal}\n"
+                    f"TASK: Create/Modify {step}(s) based on this description: {goal}\n"
                     f"IMPORTANT: Use existing variable names from the script where appropriate."
                 )
             }]
             
-            # GENERATION LOOP
-            for attempt in range(5):
-                try:
-                    with console.status(f"[bold yellow]Drafting {step}...[/bold yellow]", spinner="dots"):
-                        response = self.agent.invoke({"messages": messages})
-                        output = self._parse_agent_response(response)
-
-                    # Handle empty output edge case
-                    if not output or not output.strip():
-                        output = "(No text response provided by Agent. It may have executed a tool silently.)"
-
-                    current_count = len(self.builder.defined.get(step, set()))
-                    
-                    # Entities were added
-                    if current_count > start_count:
-                        console.print(Panel(output, title="[bold green]SUCCESS[/bold green]", border_style="green"))
-                        new_code = self.builder.get_code_by_type(step)
-                        console.print(f"\n[bold]Current {step.upper()} definitions:[/bold]")
-                        console.print(Syntax(new_code, "python", theme="monokai"))
-                        consecutive_errors = 0
-                        break # Break inner loop, return to user prompt
-
-                    # Print the output so the user sees questions OR errors
-                    border_color = "red" if "ERROR" in output else "blue"
-                    title = "ERROR" if "ERROR" in output else "TUTOR"
-                    console.print(Panel(Markdown(output), title=f"[bold {border_color}]{title}[/bold {border_color}]", border_style=border_color))
+            # 3. Execution Loop (Robust Structure from View Mode)
+            task_complete = False
+            
+            while not task_complete:
                 
-                    clarification_phrases = [
-                        "should that be", "what", "which",
-                        "i suggest", "i recommend", "does this look correct", 
-                        "would you like", "do you want", "can you confirm",
-                        "how about", "already exists", "already defined", 
-                        "different name", "unable to", "cannot create", 
-                        "please specify", "please provide", "?",
-                        "propose", "intend to", "clarify", "confirm", "suggest", "recommend",
-                    ]
+                # Attempt Loop (Handles "laziness" or failures)
+                for attempt in range(3):
+                    try:
+                        with console.status(f"[bold yellow]Drafting {step} (Attempt {attempt+1})...[/bold yellow]", spinner="dots"):
+                            # Snapshot before
+                            script_before = self.builder.get_script()
+                            
+                            response = self.agent.invoke({"messages": messages})
+                            output = self._parse_agent_response(response)
+                            
+                            # Snapshot after
+                            script_after = self.builder.get_script()
 
-                    # If it's an error or a question, let the user respond
-                    is_question = any(phrase in output.lower() for phrase in clarification_phrases)
-                    is_error = "ERROR" in output or "exception" in output.lower()
+                        if not output or not output.strip():
+                            output = "(No text response provided by Agent)"
 
-                    if is_question or is_error:
-                        user_reply = self.get_input("Your answer (or Enter to cancel):")
-                        if not user_reply: 
-                            console.print("[dim]Cancelling current attempt...[/dim]")
-                            break 
+                        # CHECK: Did the script change?
+                        script_changed = (script_before != script_after)
                         
-                        messages.append({"role": "assistant", "content": output})
-                        
-                        # if the user confirms, give a system instruction to execute tools
-                        confirmation_keywords = ['yes', 'y', 'ok', 'okay', 'sure', 'correct', 'go ahead', 'proceed', 'continue']
-                        if user_reply.strip().lower() in confirmation_keywords:
-                            user_reply += " (SYSTEM INSTRUCTION: The user confirmed the plan. EXECUTE the required tool calls IMMEDIATELY. Do not wait.)"
-                        
+                        # Detect Question/Error
+                        clarification_phrases = [
+                            "should that be", "what", "which", "i suggest", "i recommend", 
+                            "does this look correct", "would you like", "do you want", 
+                            "can you confirm", "how about", "unable to", "cannot create", 
+                            "please specify", "?", "propose", "intend to", "clarify", "confirm"
+                        ]
+                        is_question = any(phrase in output.lower() for phrase in clarification_phrases)
+                        is_error = "ERROR" in output or "exception" in output.lower()
 
-                        messages.append({"role": "user", "content": user_reply})
-                        continue 
-                    else:
-                        # Agent said something that wasn't a success and wasn't a question.
-                        console.print("[warning]Agent finished without creating entities. Try rephrasing?[/warning]")
+                        # --- SCENARIO A: SUCCESS ---
+                        if script_changed:
+                            # Reorder dependencies to be safe
+                            self.builder.reorder()
+                            
+                            console.print(Panel(Markdown(output), title="[bold green]SUCCESS[/bold green]", border_style="green"))
+                            
+                            # Show the specific code block for this step type
+                            new_code = self.builder.get_code_by_type(step)
+                            console.print(f"\n[bold]Current {step.upper()} definitions:[/bold]")
+                            console.print(Syntax(new_code, "python", theme="monokai"))
+                            
+                            task_complete = True # Exit outer loop
+                            break # Exit attempt loop
+
+                        # --- SCENARIO B: QUESTION OR AGENT ERROR ---
+                        if is_question or is_error:
+                            border_color = "red" if is_error else "blue"
+                            title = "ERROR" if is_error else "QUESTION"
+                            console.print(Panel(Markdown(output), title=f"[bold {border_color}]{title}[/bold {border_color}]", border_style=border_color))
+                            
+                            user_reply = self.get_input("Your answer (or Enter to cancel):")
+                            
+                            if not user_reply:
+                                console.print("[dim]Action cancelled.[/dim]")
+                                task_complete = True
+                                break 
+                            
+                            # Append history and loop back to 'while not task_complete'
+                            messages.append({"role": "assistant", "content": output})
+                            
+                            confirmation_keywords = ['yes', 'y', 'ok', 'okay', 'sure', 'correct', 'go ahead']
+                            if user_reply.strip().lower() in confirmation_keywords:
+                                user_reply += " (SYSTEM: The user confirmed. EXECUTE the required tool calls IMMEDIATELY.)"
+                                
+                            messages.append({"role": "user", "content": user_reply})
+                            break # Break attempt loop to restart invoke with new messages
+
+                        # --- SCENARIO C: LAZINESS (Text but no Action) ---
+                        # The agent talked but didn't call a tool, and didn't ask a question.
+                        if attempt < 2:
+                            console.print(f"[dim red]System: Agent returned text but did not execute tools. Retrying ({attempt+1}/3)...[/dim red]")
+                            messages.append({"role": "assistant", "content": output})
+                            messages.append({
+                                "role": "user", 
+                                "content": "SYSTEM ERROR: You responded with text but DID NOT execute any tools. The script has NOT changed. You must CALL the functions (e.g., create_surface, etc) to perform the task."
+                            })
+                            continue # Try next attempt immediately
+                        else:
+                            # Final failure
+                            console.print(Panel(Markdown(output), title="Agent (Failed)", border_style="red"))
+                            console.print("[error]Agent failed to execute tools after multiple attempts.[/error]")
+                            task_complete = True
+                            break
+
+                    except Exception as e:
+                        console.print(f"[error]Error: {e}[/error]")
+                        task_complete = True
                         break
-                    
-                except Exception as e:
-                    consecutive_errors += 1
-                    console.print(f"\n[error]An unexpected error occurred: {e}[/error]")
-                    if consecutive_errors >= max_consecutive_errors: break
-
+        
+        # End of outer while loop (user pressed Enter on prompt)
         self._print_script()
         return self.builder.get_script()
     
